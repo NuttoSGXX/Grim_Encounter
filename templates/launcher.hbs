@@ -1,0 +1,68 @@
+<div class="efx-ui ge-ui">
+  <header class="efx-compact-head">
+    <div class="ge-mark" aria-hidden="true">✦</div>
+    <div class="ge-titles">
+      <h1>Grim Encounter</h1>
+      <p>Start Encounter</p>
+    </div>
+    <div class="efx-compact-status">GM</div>
+    <button type="button" class="efx-x" data-act="close" title="Close">×</button>
+  </header>
+
+  <div class="efx-compact-body">
+    <label class="efx-field">
+      <span>Scene</span>
+      <select name="sceneId" required>
+        <option value="" disabled selected>Select Scene</option>
+        {{#each scenes}}
+          <option value="{{id}}">{{name}}{{#if active}} — Active{{/if}}</option>
+        {{else}}
+          <option value="" disabled>No scenes found</option>
+        {{/each}}
+      </select>
+    </label>
+
+    <div class="efx-field">
+      <span>Flame</span>
+      <div class="efx-flame-row" role="radiogroup" aria-label="Flame colour">
+        {{#each flames}}
+          <label class="efx-swatch" style="--sw: {{hex}}" title="{{name}}">
+            <input type="radio" name="flame" value="{{hex}}" {{#if checked}}checked{{/if}}>
+          </label>
+        {{/each}}
+        <label class="efx-swatch custom{{#if custom.set}} set{{/if}}" style="--sw: {{custom.hex}}" title="Custom colour">
+          <input type="radio" name="flame" value="custom" {{#if custom.checked}}checked{{/if}}>
+          <input type="color" name="flameCustom" value="{{custom.hex}}" aria-label="Custom flame colour">
+        </label>
+        <span class="efx-flame-name">{{flameName}}</span>
+      </div>
+    </div>
+
+    <div class="efx-compact-options">
+      <label class="efx-mini-toggle" title="Add hostile tokens from the destination scene to the combat">
+        <input type="checkbox" name="hostile" checked>
+        <span class="sw"></span>
+        <span>Hostiles</span>
+      </label>
+      <div class="efx-party-count" title="Player characters selected for the encounter">
+        <span class="count">{{actors.length}}</span>
+        <span>Players</span>
+      </div>
+    </div>
+
+    <div class="efx-actor-strip" aria-label="Party">
+      {{#each actors}}
+        <label class="efx-actor-mini" title="{{name}}">
+          <input type="checkbox" name="actor" value="{{id}}" {{#if checked}}checked{{/if}}>
+          <img src="{{img}}" alt="{{name}}">
+          <span>{{name}}</span>
+        </label>
+      {{/each}}
+    </div>
+  </div>
+
+  <footer class="efx-compact-foot">
+    <button type="button" class="efx-ghost efx-preview-btn" data-act="preview">Preview</button>
+    <button type="submit" class="efx-begin"><span>Start Encounter</span></button>
+  </footer>
+</div>
