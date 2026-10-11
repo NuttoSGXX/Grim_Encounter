@@ -1,5 +1,5 @@
 /**
- * Grim Encounter  –  Foundry VTT V14 / dnd5e
+ * Grim Encounter  –  Foundry VTT V13-V14 / dnd5e
  * GM-only launcher -> pick scene, party and flame colour -> cinematic intro -> tokens added to the
  * real Combat -> one 3D d20 per player (simultaneous, skinned with Dice So Nice) -> NPCs roll silently
  * -> order announced as cards -> combat starts automatically. Follows Grim Core's theme when present.

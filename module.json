@@ -1,10 +1,10 @@
 {
   "id": "grim-encounter",
   "title": "Grim Encounter",
-  "description": "GM-only cinematic Start Encounter for Foundry VTT v14 + dnd5e, in the Grim black-and-red style: a small floating launcher, a fire intro in any colour you choose, simultaneous d20 initiative dice skinned with each player's Dice So Nice look, an arched-card initiative order, and automatic combat start. Follows Grim Core's theme.",
+  "description": "GM-only cinematic Start Encounter for Foundry VTT v13/v14 + dnd5e, in the Grim black-and-red style: a small floating launcher, a fire intro in any colour you choose, simultaneous d20 initiative dice skinned with each player's Dice So Nice look, an arched-card initiative order, and automatic combat start. Follows Grim Core's theme.",
   "version": "1.0.0",
   "compatibility": {
-    "minimum": "14",
+    "minimum": "13",
     "verified": "14"
   },
   "authors": [
@@ -24,7 +24,7 @@
         "id": "dnd5e",
         "type": "system",
         "compatibility": {
-          "minimum": "6.0.0"
+          "minimum": "5.0.0"
         }
       }
     ],

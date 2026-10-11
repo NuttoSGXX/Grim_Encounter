@@ -1,6 +1,6 @@
 # Grim Encounter
 
-A GM-only cinematic **Start Encounter** tool for **Foundry VTT v14** and the **dnd5e** system, in the black-and-red style of the Grim modules.
+A GM-only cinematic **Start Encounter** tool for **Foundry VTT v13 or v14** and the **dnd5e** system, in the black-and-red style of the Grim modules.
 
 Pick a scene and a flame colour, press **Start Encounter**. The screen is taken over by a full-screen fire cinematic, everyone is moved to the scene, the tokens are added to Foundry's **native Combat**, every player rolls their own 3D d20 for initiative at the same time, the order is announced as a row of cards, and combat starts automatically.
 
@@ -12,7 +12,7 @@ Manifest URL:
 https://github.com/NuttoSGXX/Grim_Encounter/releases/latest/download/module.json
 ```
 
-Requirements: Foundry VTT v14, dnd5e 6.0.0 or newer.
+Requirements: Foundry VTT v13 or v14, dnd5e 5.0.0 or newer (tested on v14; v13 with dnd5e 5.3.x supported).
 Recommended: **Dice So Nice** (dice look) and **Grim Core** (shared theme for all Grim modules).
 
 ## Using it
