@@ -1,15 +1,15 @@
 {
   "id": "grim-encounter",
   "title": "Grim Encounter",
-  "description": "GM-only cinematic Start Encounter for Foundry VTT v13/v14 + dnd5e, in the Grim black-and-red style: a small floating launcher, a fire intro in any colour you choose, simultaneous d20 initiative dice skinned with each player's Dice So Nice look, an arched-card initiative order, and automatic combat start. Follows Grim Core's theme.",
-  "version": "1.0.0",
+  "description": "GM-only cinematic Start Encounter for Foundry VTT v13/v14 + dnd5e, in the Grim black-and-red style: a small floating launcher, a fire intro in any colour you choose, simultaneous d20 initiative dice drawn with each player's full Dice So Nice look (themes, presets, textures), Heroic Inspiration re-rolls, a clickable board-token list, dice for player-controlled NPC tokens (familiars, summons), an arched-card initiative order, and automatic combat start. Follows Grim Core's theme.",
+  "version": "1.4.0",
   "compatibility": {
     "minimum": "13",
     "verified": "14"
   },
   "authors": [
     {
-      "name": "NuttoSGXX"
+      "name": "DM Bank"
     }
   ],
   "esmodules": [
@@ -42,7 +42,6 @@
     ]
   },
   "socket": true,
-  "url": "https://github.com/NuttoSGXX/Grim_Encounter",
-  "manifest": "https://github.com/NuttoSGXX/Grim_Encounter/releases/latest/download/module.json",
-  "download": "https://github.com/NuttoSGXX/Grim_Encounter/releases/download/v1.0.0/module.zip"
+  "license": "LICENSE.txt",
+  "readme": "README.md"
 }

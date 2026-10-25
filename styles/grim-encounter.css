@@ -6,6 +6,8 @@
 
 @font-face { font-family: "GE Grenze"; src: url("../fonts/Grenze-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "GE Grenze"; src: url("../fonts/Grenze-SemiBold.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "GEN Runic"; src: url("../fonts/noto-sans-runic-runic-400-normal.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "GEN Num"; src: url("../fonts/spectral-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-display: swap; }
 @font-face { font-family: "GE Cinzel"; src: url("../fonts/Cinzel.woff2") format("woff2"); font-weight: 400 900; font-display: swap; }
 
 :root {
@@ -96,6 +98,7 @@
 #efx-panel .efx-mini-toggle, #efx-panel .efx-party-count {
   display: inline-flex; align-items: center; gap: 7px; margin: 0; font-family: var(--efx-serif); font-size: 9.5px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--ge-ash);
 }
+#efx-panel .efx-toggle-group { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 #efx-panel .efx-mini-toggle { cursor: pointer; }
 #efx-panel .efx-mini-toggle input { position: absolute; opacity: 0; pointer-events: none; }
 #efx-panel .efx-mini-toggle .sw { position: relative; flex: none; width: 28px; height: 14px; border-radius: 2px; background: var(--ge-field); border: 1px solid var(--ge-iron); box-shadow: inset 0 2px 4px rgba(0,0,0,.7); transition: background .15s, border-color .15s; }
@@ -105,11 +108,25 @@
 #efx-panel .efx-mini-toggle:hover { color: var(--ge-bone); }
 #efx-panel .efx-party-count .count { color: var(--ge-soft); font-family: var(--ge-display); font-size: 15px; letter-spacing: 0; }
 
+#efx-panel .efx-strip-label[hidden], #efx-panel .efx-actor-strip[hidden] { display: none; }
 #efx-panel .efx-actor-strip { display: flex; flex-wrap: wrap; gap: 5px; min-height: 0; }
 #efx-panel .efx-actor-mini { position: relative; width: 30px; height: 30px; flex: none; display: block; margin: 0; cursor: pointer; border: 1px solid var(--ge-iron); border-radius: 2px; overflow: hidden; opacity: .5; transition: opacity .15s, border-color .15s; }
 #efx-panel .efx-actor-mini:hover { opacity: .9; }
 #efx-panel .efx-actor-mini input { position: absolute; opacity: 0; pointer-events: none; }
 #efx-panel .efx-actor-mini:has(input:checked) { opacity: 1; border-color: var(--ge-ember); box-shadow: 0 0 8px rgba(224,58,63,.35); }
+#efx-panel .efx-strip-label { margin: 8px 0 4px; color: var(--ge-soft); font-size: 9px; letter-spacing: .22em; text-transform: uppercase; }
+#efx-panel .efx-party-count { display: flex; align-items: center; gap: 4px; }
+#efx-panel .efx-party-count .efx-dot { margin: 0 3px; opacity: .5; }
+#efx-panel .efx-foe-strip { max-height: 104px; overflow-y: auto; padding: 1px; scrollbar-width: thin; }
+#efx-panel .efx-foe-empty { margin: 0; padding: 6px 0; color: var(--ge-soft); font-size: 11px; opacity: .75; }
+#efx-panel .efx-pet-mini { --dc: #2f6f8a; }
+#efx-panel .efx-foe-mini, #efx-panel .efx-pet-mini { border-color: var(--dc, var(--ge-iron)); }
+#efx-panel .efx-foe-mini.d-hostile { --dc: #7d1d22; } #efx-panel .efx-foe-mini.d-neutral { --dc: #8a7424; }
+#efx-panel .efx-foe-mini.d-friendly { --dc: #2f7a4a; } #efx-panel .efx-foe-mini.d-secret { --dc: #5a4a86; }
+#efx-panel .efx-foe-mini:has(input:checked) { border-color: var(--ge-ember); }
+#efx-panel .efx-board-count { opacity: .7; letter-spacing: .1em; }
+#efx-panel .efx-foe-mini.is-hidden img { filter: grayscale(1) brightness(.6); }
+#efx-panel .efx-foe-mini .efx-foe-eye { position: absolute; top: 2px; right: 2px; font-size: 9px; color: var(--ge-bone); text-shadow: 0 0 3px #000; pointer-events: none; }
 #efx-panel .efx-actor-mini img { display: block; width: 100%; height: 100%; object-fit: cover; border: 0; }
 #efx-panel .efx-actor-mini span { position: absolute; inset: auto 0 0; padding: 1px 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ge-bone); background: rgba(0,0,0,.75); font-size: 7px; text-align: center; }
 
@@ -188,72 +205,188 @@
 .st-fire.leave .efx-banner { opacity: 0; transition: opacity .9s ease; }
 
 /* ======================================================================
-   DICE STAGE (themed with CSS variables)
+   INITIATIVE STAGE
+   One column per player over a square magic circle (scripts/square-sigil.js).
+   Dice are canvas renders (scripts/dice3d.js), shared with Grim FateRoll / Pulse.
    ====================================================================== */
 .efx-dice-stage {
-  --bd1: rgba(28,6,0,.82); --bd2: rgba(0,0,0,.93); --aura1: rgba(255,150,40,.55); --aura2: rgba(255,60,0,.15); --head: #ffd9a0; --glow: #ff5a0a;
-  --name: #fff3d6; --hint: #ffd9a0; --rowA: rgba(90,16,4,.92); --rowB: rgba(28,5,2,.85); --rowbd: #8a4a2a; --rowpcA: rgba(140,36,6,.95); --rowpcB: rgba(40,8,2,.88); --rowpcbd: #ffb347; --tot: #ffd9a0; --num: #ffe9b8; --ring: #ffc060;
-  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.2rem;
+  /* each --core-* is set by scripts/main.js from Grim Core's palette (non-crimson themes); the value after the comma is the shipped look */
+  --bd1: var(--core-bd1, rgba(28,6,0,.82)); --bd2: rgba(0,0,0,.93); --head: var(--core-soft, #ffd9a0); --glow: var(--core-glow, #ff5a0a);
+  --name: #fff3d6; --hint: var(--core-soft, #ffd9a0); --tot: var(--core-soft, #ffd9a0); --num: var(--core-soft, #ffe9b8);
+  --gen-accent: var(--core-acc, #ff7a1a);
+  --gen-red: var(--core-hi, #ff3b3b);
+  --gen-shade: color-mix(in srgb, var(--gen-red) 70%, transparent);
+  --gen-green: #39d36b;
+  --gen-w: clamp(118px, calc(86vw / var(--gen-n, 4)), 230px);
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem;
   animation: efx-fadein .7s ease both; transition: opacity .8s ease;
 }
 .efx-dice-stage.leaving { opacity: 0; }
 @keyframes efx-fadein { from { opacity: 0 } to { opacity: 1 } }
 .efx-dice-stage .efx-backdrop { position: absolute; inset: 0; background: radial-gradient(ellipse at center, var(--bd1), var(--bd2)); }
 .efx-dice-stage .efx-sparks { z-index: 2; }
-.efx-headline { position: relative; z-index: 1; font: 900 clamp(1.4rem, 3vw, 2.4rem) var(--efx-serif); letter-spacing: .35em; text-indent: .35em; color: var(--head); text-shadow: 0 0 14px var(--glow), 0 0 40px var(--glow); }
-.efx-dice-row { position: relative; z-index: 1; display: flex; flex-wrap: wrap; justify-content: center; gap: .6rem 1rem; max-width: 96vw; }
-.efx-dice-stage.ordered .efx-dice-row, .efx-dice-stage.ordered .efx-headline { display: none; }
 
-.efx-slot { position: relative; display: flex; flex-direction: column; align-items: center; font-family: var(--efx-serif); }
-.efx-aura { position: absolute; top: 4%; left: 50%; width: 70%; aspect-ratio: 1; transform: translateX(-50%); border-radius: 50%; opacity: 0; pointer-events: none;
-  background: radial-gradient(circle, var(--aura1), var(--aura2) 60%, transparent 72%); transition: opacity .4s; }
-.efx-slot.mine .efx-aura { opacity: 1; animation: efx-aura 1.6s ease-in-out infinite; }
-.efx-slot.charging .efx-aura { animation: efx-aura .25s ease-in-out infinite; filter: brightness(1.6); }
-.efx-slot.rolling .efx-aura { opacity: 1; animation: none; transform: translateX(-50%) scale(1.35); filter: brightness(1.4); }
-.efx-slot.landed .efx-aura { opacity: .55; animation: none; }
-.efx-slot.crit .efx-aura { opacity: 1; background: radial-gradient(circle, rgba(255,240,150,.95), rgba(255,190,40,.4) 60%, transparent 74%); transform: translateX(-50%) scale(1.5); }
-.efx-slot.fumble .efx-aura { opacity: 1; background: radial-gradient(circle, rgba(200,0,0,.6), rgba(60,0,0,.3) 60%, transparent 74%); }
-@keyframes efx-aura { 50% { transform: translateX(-50%) scale(1.22); opacity: .65; } }
-.efx-slot:not(.mine) .efx-scene3d { opacity: .72; }
-.efx-slot.fumble { animation: efx-fumble .5s linear; }
+/* ----- headline ----- */
+.efx-headline {
+  position: relative; z-index: 1; margin-bottom: .4rem;
+  font: 600 clamp(2.4rem, 6vw, 4.6rem)/1 var(--ge-display); letter-spacing: .12em; text-indent: .12em;
+  color: var(--gen-red); text-shadow: 0 0 14px var(--gen-shade), 0 0 44px color-mix(in srgb, var(--gen-red) 45%, transparent), 0 3px 0 #000;
+  animation: gen-title-in .8s ease-out both;
+}
+@keyframes gen-title-in { from { opacity: 0; letter-spacing: .5em; filter: blur(8px); } }
+
+/* ----- columns ----- */
+.gen-row { position: relative; z-index: 1; display: flex; justify-content: center; align-items: flex-start; gap: clamp(4px, 1vw, 16px); max-width: 98vw; }
+.efx-dice-stage.ordered :is(.gen-row, .efx-headline, .gen-foot) { display: none; }
+.gen-col { position: relative; width: var(--gen-w); display: flex; flex-direction: column; align-items: center; font-family: var(--efx-serif); animation: gen-col-in .6s cubic-bezier(.2,.9,.3,1) both; }
+.gen-col:nth-child(2) { animation-delay: .08s; } .gen-col:nth-child(3) { animation-delay: .16s; } .gen-col:nth-child(4) { animation-delay: .24s; }
+.gen-col:nth-child(5) { animation-delay: .32s; } .gen-col:nth-child(6) { animation-delay: .40s; } .gen-col:nth-child(n+7) { animation-delay: .48s; }
+@keyframes gen-col-in { from { opacity: 0; transform: translateY(30px); } }
+
+/* rune streams behind each column: down in odd columns, up in even ones */
+.gen-runes {
+  position: absolute; left: 2%; right: 2%; top: -7vh; height: calc(var(--gen-w) * 1.32 + 7vh);
+  display: flex; justify-content: space-around; overflow: hidden; pointer-events: none;
+  -webkit-mask-image: linear-gradient(transparent, #000 16%, #000 78%, transparent); mask-image: linear-gradient(transparent, #000 16%, #000 78%, transparent);
+  opacity: .5; transition: opacity .4s;
+}
+.gen-runes .lane { position: relative; width: 1.2em; overflow: hidden; }
+.gen-runes .lane-in {
+  position: absolute; left: 0; top: 0; display: flex; flex-direction: column; opacity: var(--o, .8);
+  font: var(--fs, 16px)/1.12 "GEN Runic", "Noto Sans Runic", "Segoe UI Historic", "Segoe UI Symbol", sans-serif;
+  color: var(--gen-red); text-shadow: 0 0 6px color-mix(in srgb, var(--gen-red) 95%, transparent), 0 0 14px color-mix(in srgb, var(--gen-red) 55%, transparent);
+  animation: gen-rune-run var(--d, 10s) linear infinite reverse;   /* reverse = the runes fall */
+  will-change: transform;
+}
+.gen-runes .lane-in b { display: block; font-weight: 400; white-space: pre; text-align: center; }
+.gen-col:nth-child(even) .gen-runes .lane-in { animation-direction: normal; }   /* the runes rise */
+@keyframes gen-rune-run { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+.gen-col.mine .gen-runes { opacity: .7; }
+.gen-col:is(.charging, .rolling) .gen-runes { opacity: .95; }
+.gen-col.crit .gen-runes .lane-in { color: #ffd36a; text-shadow: 0 0 6px rgba(255,190,60,.95), 0 0 14px rgba(255,140,0,.6); }
+.gen-col.fumble .gen-runes { opacity: .25; }
+.efx-dice-stage.is-picking .gen-col.is-target .gen-runes .lane-in { color: #6dffa0; text-shadow: 0 0 6px rgba(57,211,107,.95); }
+
+.gen-dice { position: relative; z-index: 1; width: 100%; height: calc(var(--gen-w) * 1.12); display: flex; flex-direction: column; align-items: center; justify-content: center; outline: none; }
+.gen-col.mine:not(.is-rolled) .gen-dice { cursor: pointer; pointer-events: auto; }
+.gen-col.mine:not(.is-rolled):not(.charging):not(.rolling) .gen-dice:hover { transform: scale(1.05); transition: transform .2s; }
+.gen-d20s { display: flex; flex-direction: column; align-items: center; }
+.gen-d20s .gen-d { width: calc(var(--gen-w) * .66); }
+.gen-d20s.two .gen-d { width: calc(var(--gen-w) * .5); }
+.gen-d20s.two .gen-d + .gen-d { margin-top: calc(var(--gen-w) * -.04); }
+.gen-bonus { display: flex; gap: 6%; justify-content: center; margin-top: calc(var(--gen-w) * -.02); }
+/* a Dice So Nice d20 is a WebGL mesh drawn over an empty placeholder: the glow states move to the placeholder */
+.gen-d.gen-d-dsn { filter: none !important; }
+.gen-col.mine:not(.is-rolled) .gen-d-dsn { background: radial-gradient(circle closest-side, color-mix(in srgb, var(--gen-accent) 42%, transparent) 30%, transparent 100%); }
+.gen-col.crit .gen-d-dsn:not(.is-dropped) { background: radial-gradient(circle closest-side, rgba(255,200,90,.7) 30%, transparent 100%); }
+.gen-col.fumble .gen-d-dsn:not(.is-dropped) { background: radial-gradient(circle closest-side, rgba(200,0,0,.6) 30%, transparent 100%); }
+.gen-bonus .gen-d { width: calc(var(--gen-w) * .27); }
+.gen-d { display: block; aspect-ratio: 1; height: auto; filter: drop-shadow(0 0 10px rgba(0,0,0,.9)); transition: opacity .5s, transform .5s, filter .5s; }
+.gen-d.is-dropped { opacity: .32; transform: scale(.82); filter: grayscale(.9); }
+.gen-col:not(.mine):not(.is-rolled) .gen-d { opacity: .75; }
+.gen-col.mine:not(.is-rolled) .gen-d20s .gen-d { filter: drop-shadow(0 0 12px color-mix(in srgb, var(--gen-accent) 70%, transparent)) drop-shadow(0 0 4px #000); }
+.gen-col.charging .gen-d, .gen-col.rolling .gen-d { filter: drop-shadow(0 0 16px var(--glow)); }
+.gen-col.crit .gen-d20s .gen-d:not(.is-dropped) { filter: drop-shadow(0 0 16px rgba(255,200,90,.95)) drop-shadow(0 0 4px #000); }
+.gen-col.fumble .gen-d20s .gen-d:not(.is-dropped) { filter: grayscale(.6) brightness(.7) drop-shadow(0 0 12px rgba(200,0,0,.8)); }
+.gen-col.fumble .gen-dice { animation: efx-fumble .5s linear; }
 @keyframes efx-fumble { 20% { transform: translateX(-9px) } 40% { transform: translateX(8px) } 60% { transform: translateX(-5px) } 80% { transform: translateX(3px) } }
 
-.efx-scene3d { position: relative; display: grid; place-items: center; }
-/* The spin wrapper rotates the die in place (no translation): idle spin before the roll, a faster spin that settles on the result after it. */
-.efx-spin { position: relative; width: 0; height: 0; transform-style: preserve-3d; will-change: transform; }
-.efx-die { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-style: preserve-3d; }
-.efx-die.gm { cursor: pointer; }
-.efx-slot.mine .efx-scene3d { cursor: pointer; }
-.efx-slot.rolling .efx-scene3d { filter: drop-shadow(0 0 14px var(--glow)); }
-.efx-face { position: absolute; left: 0; top: 0; transform-origin: 0 0; backface-visibility: hidden; clip-path: polygon(50% 0, 0 100%, 100% 100%); pointer-events: auto; background: var(--edge, #000); }
-.efx-face::before { content: ""; position: absolute; inset: 0; clip-path: polygon(50% 6.7%, 5% 96.7%, 95% 96.7%); background: var(--body); background-blend-mode: var(--blend, normal); opacity: var(--bop, 1); }
-.efx-face b { position: absolute; z-index: 1; left: 50%; top: 66.6%; transform: translate(-50%, -50%); font: 700 var(--fs, 28px)/1 var(--nfont, Georgia, serif); color: var(--num); text-shadow: var(--nsh, 0 0 6px #000); }
-.efx-scene3d > .efx-ring { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; border: 5px solid var(--ring); animation: efx-landring .8s ease-out forwards; }
-@keyframes efx-landring { 0% { opacity: .95; transform: scale(1); } 100% { opacity: 0; transform: scale(9); border-width: 1px; } }
+/* slot reel: out through the floor, in from the top of the screen */
+.gen-dice.gen-drop-out { animation: gen-drop-out .65s cubic-bezier(.5,0,.9,.5) forwards; }
+.gen-dice.gen-drop-in { animation: gen-drop-in .75s cubic-bezier(.2,.7,.3,1) both; }
+@keyframes gen-drop-out { to { transform: translateY(62vh) rotate(38deg); opacity: 0; } }
+@keyframes gen-drop-in {
+  0% { transform: translateY(-85vh); opacity: 0; }
+  15% { opacity: 1; }
+  62% { transform: translateY(16px); }
+  80% { transform: translateY(-7px); }
+  100% { transform: none; }
+}
 
-.efx-res { height: 4.6rem; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; }
-.efx-res .hint { font-size: .95rem; letter-spacing: .1em; color: var(--hint); text-shadow: 0 0 10px var(--glow); animation: efx-pulse 1.3s ease-in-out infinite; }
-.efx-res .hint.dim { opacity: .5; animation: none; }
+/* ----- result ----- */
+.gen-res { position: relative; z-index: 1; min-height: 5.2rem; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; text-align: center; transition: opacity .3s; }
+.gen-res.gen-fade { opacity: 0; }
+.gen-res .hint { font-size: .9rem; letter-spacing: .1em; color: var(--hint); text-shadow: 0 0 10px var(--glow); animation: efx-pulse 1.3s ease-in-out infinite; }
+.gen-res .hint.dim { opacity: .5; animation: none; }
 @keyframes efx-pulse { 50% { opacity: .35; } }
-.efx-res .nat { font: 900 2.6rem/1 Georgia, serif; text-shadow: 0 0 16px var(--glow); animation: efx-pop .35s cubic-bezier(.2, 2, .4, 1); }
-.efx-res .sum { font-size: .95rem; opacity: .85; }
-.efx-slot.crit .nat { color: #ffe066; text-shadow: 0 0 26px #ffb300, 0 0 50px #ff8a00; }
-.efx-slot.fumble .nat { color: #ff4444; text-shadow: 0 0 22px #b00000; }
+.gen-sum { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 0 .3em; font-size: .78rem; color: #e9dccc; opacity: .9; }
+.gen-sum .nat { font: 700 1rem "GEN Num", Georgia, serif; color: #fff; }
+.gen-sum i { font-style: normal; opacity: .6; }
+.gen-sum .bd { color: #9ff0b8; }
+.gen-total { font: 700 clamp(2rem, calc(var(--gen-w) * .26), 3.2rem)/1 "GEN Num", Georgia, serif; color: #fff7e8; text-shadow: 0 0 16px var(--glow), 0 2px 3px #000; animation: efx-pop .35s cubic-bezier(.2, 2, .4, 1); }
+.gen-col.crit .gen-total { color: #ffe066; text-shadow: 0 0 26px #ffb300, 0 0 50px #ff8a00; }
+.gen-col.fumble .gen-total { color: #ff4444; text-shadow: 0 0 22px #b00000; }
+.gen-note { margin-top: 2px; font-size: .72rem; letter-spacing: .08em; color: #9ff0b8; }
 @keyframes efx-pop { from { transform: scale(2.4); opacity: 0; } to { transform: none; opacity: 1; } }
-.efx-name { font: 700 1.1rem var(--efx-serif); letter-spacing: .06em; color: var(--name); text-shadow: 0 0 10px var(--glow); text-align: center; }
-.efx-player { font-size: .8rem; opacity: .65; color: var(--hint); }
 
-.efx-gm-roll { position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 3; width: auto; height: 30px; padding: 0 18px; margin: 0; pointer-events: auto; cursor: pointer; line-height: 1;
-  font-family: var(--efx-serif); font-size: 10px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; color: var(--ge-bone);
-  background: linear-gradient(var(--ge-btn-1), var(--ge-btn-2)); border: 1px solid var(--ge-iron); border-radius: 2px; box-shadow: none; opacity: .9; }
-.efx-gm-roll:hover { border-color: var(--ge-ember); background: linear-gradient(var(--ge-btn-h1), var(--ge-btn-h2)); }
+.gen-name { position: relative; z-index: 1; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 600 clamp(1.05rem, calc(var(--gen-w) * .13), 1.6rem)/1.15 var(--ge-display); letter-spacing: .04em; color: var(--gen-red); text-shadow: 0 0 10px var(--gen-shade), 0 2px 2px #000; }
+.gen-player { position: relative; z-index: 1; font-size: .75rem; opacity: .65; color: var(--hint); margin-bottom: .45rem; }
+
+/* ----- green modifier chips (GM clicks them; players only see the ones that are on) ----- */
+.gen-mods { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; width: min(100%, 150px); }
+.efx-dice-stage button { all: unset; box-sizing: border-box; }
+.gen-mods button {
+  height: 22px; display: grid; place-items: center; font: 700 10px/1 var(--efx-serif); letter-spacing: .12em; text-transform: uppercase;
+  color: #7fe0a0; border: 1px solid #1f7a3e; background: rgba(4,20,10,.75); border-radius: 2px; opacity: .8;
+}
+.efx-dice-stage.is-gm .gen-mods button { cursor: pointer; pointer-events: auto; }
+.efx-dice-stage.is-gm .gen-mods button:hover { opacity: 1; border-color: var(--gen-green); }
+.gen-mods button[data-mod="d8"] { grid-column: 1 / -1; }
+.gen-mods button.on { opacity: 1; color: #04140a; background: var(--gen-green); border-color: #8dffb4; box-shadow: 0 0 10px rgba(57,211,107,.75); }
+.efx-dice-stage:not(.is-gm) .gen-mods button:not(.on) { visibility: hidden; }
+.efx-dice-stage:not(.is-gm) .gen-col:not(.has-mods) .gen-mods { display: none; }
+
+/* ----- per-column actions ----- */
+.gen-acts { position: relative; z-index: 1; display: flex; gap: 4px; margin-top: 6px; min-height: 22px; }
+.efx-dice-stage .gen-btn {
+  display: inline-grid; place-items: center; height: 30px; padding: 0 16px; cursor: pointer; pointer-events: auto;
+  font: 700 10px/1 var(--efx-serif); letter-spacing: .2em; text-transform: uppercase; color: var(--ge-bone);
+  background: linear-gradient(var(--ge-btn-1), var(--ge-btn-2)); border: 1px solid var(--ge-iron); border-radius: 2px; opacity: .92;
+}
+.efx-dice-stage .gen-btn:hover { border-color: var(--ge-ember); background: linear-gradient(var(--ge-btn-h1), var(--ge-btn-h2)); }
+.efx-dice-stage .gen-btn[disabled] { opacity: .35; cursor: default; pointer-events: none; }
+.efx-dice-stage .gen-btn.gen-small { height: 22px; padding: 0 9px; font-size: 9px; letter-spacing: .14em; }
+.gen-acts [data-act="reroll"], .gen-acts [data-act="swap"], .gen-acts [data-act="inspire"] { display: none; }
+.gen-col.can-reroll [data-act="reroll"], .gen-col.can-swap [data-act="swap"], .gen-col.can-inspire [data-act="inspire"] { display: inline-grid; }
+.efx-dice-stage .gen-insp { color: #ffe9a0; border-color: #a8832a; text-shadow: 0 0 8px rgba(255,210,90,.8); }
+.efx-dice-stage .gen-insp:hover { border-color: #ffd36a; box-shadow: 0 0 12px rgba(255,200,80,.55); }
+
+/* Heroic Inspiration: a flash of light sweeps the column, the runes run backwards in gold */
+.gen-insp-flash {
+  position: absolute; inset: -6% -10%; z-index: 4; pointer-events: none; mix-blend-mode: screen;
+  background: linear-gradient(100deg, transparent 30%, rgba(255,236,160,.85) 48%, #fff 50%, rgba(255,236,160,.85) 52%, transparent 70%);
+  background-size: 260% 100%; background-position: 130% 0; opacity: 0;
+  animation: gen-insp-sweep 1.1s ease-out forwards;
+}
+@keyframes gen-insp-sweep { 0% { background-position: 130% 0; opacity: 1; } 100% { background-position: -30% 0; opacity: 0; } }
+.gen-col.inspired { animation: gen-insp-pulse 1.1s ease-out; }
+@keyframes gen-insp-pulse { 0% { filter: brightness(2.2) saturate(.6); } 100% { filter: none; } }
+.gen-col.rewind .gen-runes { opacity: .95; }
+.gen-col.rewind .gen-runes .lane-in { animation-direction: normal; color: #ffd36a; text-shadow: 0 0 6px rgba(255,190,60,.95), 0 0 14px rgba(255,140,0,.6); }
+.gen-col.rewind:nth-child(even) .gen-runes .lane-in { animation-direction: reverse; }
+.gen-res .hint.insp { color: #ffe9a0; text-shadow: 0 0 10px rgba(255,210,90,.8); }
+.efx-dice-stage .gen-swap { color: #9ff0b8; border-color: #1f7a3e; }
+.efx-dice-stage .gen-col.is-source .gen-swap { color: #04140a; background: var(--gen-green); border-color: #8dffb4; }
+
+/* choosing a swap partner */
+.gen-target { display: none; }
+.gen-col.is-target .gen-target {
+  display: grid; place-items: center; position: absolute; z-index: 3; left: 4%; right: 4%; top: 0; height: calc(var(--gen-w) * 1.12);
+  font-size: calc(var(--gen-w) * .3); color: #9ff0b8; text-shadow: 0 0 14px rgba(57,211,107,.9);
+  border: 1px dashed rgba(57,211,107,.7); background: rgba(4,30,14,.35); cursor: pointer; pointer-events: auto; animation: efx-pulse 1.1s ease-in-out infinite;
+}
+.efx-dice-stage.is-picking .gen-col:not(.is-target):not(.is-source) { opacity: .45; }
+
+/* ----- GM footer ----- */
+.gen-foot { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; gap: 10px; }
+.gen-begin:not([disabled]) { border-color: var(--ge-ember); box-shadow: 0 0 14px color-mix(in srgb, var(--ge-ember) 60%, transparent); }
+
 .efx-screenflash { position: absolute; inset: 0; z-index: 3; opacity: 0; animation: efx-flash .7s ease-out; pointer-events: none; }
 .efx-screenflash.gold { background: radial-gradient(circle, rgba(255,240,170,.8), transparent 70%); }
 .efx-screenflash.red { background: radial-gradient(circle, rgba(200,0,0,.55), transparent 70%); }
 
 .efx-order { position: relative; z-index: 1; display: none; flex-direction: column; align-items: center; width: 98vw; }
 .efx-dice-stage.ordered .efx-order { display: flex; }
-.efx-dice-stage.ordered .efx-gm-roll { display: none; }
 .efx-order h2 { margin: 0 0 clamp(14px, 3.5vh, 34px); text-align: center; border: none; color: var(--head); font: 900 clamp(1.5rem, 3vw, 2.4rem) var(--efx-serif); letter-spacing: .22em; text-indent: .22em; text-shadow: 0 0 20px var(--glow); }
 
 /* Initiative order: one tall arched card per combatant, highest initiative on the left (up to 15 fit on one row). */
@@ -287,7 +420,7 @@
   font: 600 max(9px, calc(var(--w) * .125))/1.2 var(--efx-serif); letter-spacing: .07em; text-transform: uppercase; color: #eadfce; text-shadow: 0 1px 3px #000, 0 0 8px #000; }
 .efx-card .tot { position: absolute; z-index: 2; left: 0; right: 0; bottom: calc(var(--w) * .08); text-align: center;
   font: 600 calc(var(--w) * .46)/1 "GE Grenze", var(--efx-serif); letter-spacing: .02em; color: #fff2e6;
-  background: linear-gradient(180deg, #fff, var(--ge-bone) 45%, var(--ge-soft)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  background: linear-gradient(180deg, #fff, var(--ge-card-bone, var(--ge-bone)) 45%, var(--ge-card-soft, var(--ge-soft))); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   filter: drop-shadow(0 2px 3px rgba(0,0,0,.9)); }
 .efx-card.pc .tot { filter: drop-shadow(0 0 8px color-mix(in srgb, var(--ge-ember) 90%, transparent)) drop-shadow(0 2px 3px rgba(0,0,0,.9)); }
 .efx-card::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 7px; height: 7px; z-index: 2; transform: translateX(-50%) rotate(45deg); background: var(--red); opacity: .9; }
@@ -304,15 +437,14 @@
 .efx-banner { top: 50%; }
 @media (prefers-reduced-motion: reduce) {
   .efx-intro.impact .efx-shaker, .efx-title.slam { animation: none !important; }
+  .gen-dice.gen-drop-out, .gen-dice.gen-drop-in { animation: none !important; }
+  .gen-runes .lane-in { animation-duration: 120s !important; }
 }
 
 /* ======================================================================
    Flame colour. The fire is authored orange; --fire-rot turns it to any hue.
    ====================================================================== */
 .efx-intro.st-fire { filter: hue-rotate(var(--fire-rot, 0deg)) saturate(var(--fire-sat, 1)) brightness(var(--fire-bri, 1)); }
-.efx-dice-stage .efx-backdrop, .efx-dice-stage .efx-headline, .efx-dice-stage .efx-sparks, .efx-dice-stage .efx-order h2 { filter: hue-rotate(var(--fire-rot, 0deg)); }
-.efx-dice-stage .efx-aura { filter: hue-rotate(var(--fire-rot, 0deg)); }
-.efx-slot.charging .efx-aura { filter: hue-rotate(var(--fire-rot, 0deg)) brightness(1.6); }
-.efx-slot.rolling .efx-aura { filter: hue-rotate(var(--fire-rot, 0deg)) brightness(1.4); }
-.efx-slot .efx-hint, .efx-res .hint { filter: hue-rotate(var(--fire-rot, 0deg)); }
-.efx-slot.crit .efx-aura, .efx-slot.fumble .efx-aura { filter: none; }
+.efx-dice-stage .efx-backdrop, .efx-dice-stage .efx-sparks, .efx-dice-stage .efx-order h2 { filter: hue-rotate(var(--fire-rot, 0deg)); }
+/* Grim Core theme (non-crimson): the stage follows the theme's hue instead of the flame colour */
+#efx-root[style*="--core-rot"] .efx-dice-stage :is(.efx-backdrop, .efx-sparks, .efx-order h2) { filter: hue-rotate(var(--core-rot)) saturate(var(--core-sat, 1)) brightness(var(--core-bri, 1)); }

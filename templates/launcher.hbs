@@ -39,17 +39,26 @@
     </div>
 
     <div class="efx-compact-options">
-      <label class="efx-mini-toggle" title="Add hostile tokens from the destination scene to the combat">
-        <input type="checkbox" name="hostile" checked>
-        <span class="sw"></span>
-        <span>Hostiles</span>
-      </label>
-      <div class="efx-party-count" title="Player characters selected for the encounter">
-        <span class="count">{{actors.length}}</span>
-        <span>Players</span>
+      <div class="efx-toggle-group">
+        <label class="efx-mini-toggle" title="On: click or drag-select tokens on the canvas and the list follows (clicking a chip selects the token there too). With nothing selected, the visible hostile tokens are ticked. Off: only the list decides.">
+          <input type="checkbox" name="useSel" checked>
+          <span class="sw"></span>
+          <span>Follow canvas</span>
+        </label>
+        <label class="efx-mini-toggle" title="Tick or clear every visible token in the list (hidden ones are never ticked this way)">
+          <input type="checkbox" name="hostile" checked>
+          <span class="sw"></span>
+          <span>All</span>
+        </label>
+      </div>
+      <div class="efx-party-count" title="Tokens (non-player) and player characters taking part in the encounter">
+        <span class="count" data-count="foe">0</span><span>Tokens</span>
+        <span class="efx-dot">·</span>
+        <span class="count" data-count="pc">{{actors.length}}</span><span>Players</span>
       </div>
     </div>
 
+    <div class="efx-strip-label efx-players-label">Players</div>
     <div class="efx-actor-strip" aria-label="Party">
       {{#each actors}}
         <label class="efx-actor-mini" title="{{name}}">
@@ -59,6 +68,12 @@
         </label>
       {{/each}}
     </div>
+
+    <div class="efx-strip-label efx-pets-label" hidden>Player-controlled <span class="efx-board-count">(familiars &amp; summons)</span></div>
+    <div class="efx-actor-strip efx-pet-strip" aria-label="Player-controlled NPC tokens" hidden></div>
+
+    <div class="efx-strip-label">On the board <span class="efx-board-count">(<b data-count="board">0</b>)</span></div>
+    <div class="efx-actor-strip efx-foe-strip" aria-label="Tokens on the board"></div>
   </div>
 
   <footer class="efx-compact-foot">

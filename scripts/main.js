@@ -1,9 +1,14 @@
 /**
  * Grim Encounter  –  Foundry VTT V13-V14 / dnd5e
  * GM-only launcher -> pick scene, party and flame colour -> cinematic intro -> tokens added to the
- * real Combat -> one 3D d20 per player (simultaneous, skinned with Dice So Nice) -> NPCs roll silently
- * -> order announced as cards -> combat starts automatically. Follows Grim Core's theme when present.
+ * real Combat -> NPCs roll silently -> one column per player, behind it a stream of runes, where each
+ * player clicks their die (skinned with Dice So Nice when present). The GM can add advantage,
+ * disadvantage or +1d8, re-roll, and swap results; Alert characters may swap once.
+ * The GM presses Begin Combat -> order announced as cards -> combat starts. Follows Grim Core's theme.
  */
+import { Die, Loop, DEFAULT_LOOK } from "./dice3d.js";
+import { DsnDie, dsnDiceAvailable, dsnDiceDebug } from "./dsn-dice.js";
+
 const ID = "grim-encounter";
 const SOCKET = `module.${ID}`;
 
@@ -79,6 +84,16 @@ Hooks.once("init", () => {
     hint: "Skin the initiative d20 with each player's own Dice So Nice appearance (colorset, texture, material, font). Needs the Dice So Nice module; otherwise the style's default die is used.",
     scope: "client", config: true, type: Boolean, default: true
   });
+  game.settings.register(ID, "dsnFull", {
+    name: "Render the full Dice So Nice d20",
+    hint: "On: the initiative d20 is drawn by Dice So Nice itself, so the player's Theme, Dice Preset, texture, material and font all show (not just the colours). Falls back to the simple die automatically if anything is missing. Needs \"Use Dice So Nice dice look\".",
+    scope: "client", config: true, type: Boolean, default: true
+  });
+  game.settings.register(ID, "freeReroll", {
+    name: "Players may re-roll without Inspiration",
+    hint: "Off (default): only the GM can re-roll a finished initiative; a player re-rolls by spending Heroic Inspiration. On: players get a free Reroll button too.",
+    scope: "world", config: true, type: Boolean, default: false
+  });
   game.settings.register(ID, "flame", { scope: "client", config: false, type: String, default: DEFAULT_FLAME });
   game.settings.register(ID, "panel", { scope: "client", config: false, type: Object, default: {} });
 });
@@ -89,9 +104,9 @@ Hooks.once("ready", () => {
   game.socket.on(SOCKET, onMessage);
   game.modules.get(ID).api = {
     open: openLauncher, launch,
-    dsn: { look: dsnLook, debug: dsnDebug },
+    dsn: { look: dsnLook, debug: (id) => ({ ...dsnDebug(id), full: dsnDiceDebug() }) },
     syncTheme: syncGrimCore,
-    preview: { intro: playIntro, dice: showDice, rolled: playRolled, order: playOrder, close: closeAll, decorate: decorateLauncher }
+    preview: { intro: playIntro, dice: showDice, rolled: playRolled, inspired: playInspired, order: playOrder, close: closeAll, decorate: decorateLauncher }
   };
 });
 
@@ -125,12 +140,44 @@ async function launcherContext() {
     .filter(a => a.type === "character" && a.hasPlayerOwner)
     .map(a => ({
       id: a.id, name: a.name, img: a.img,
-      checked: game.users.some(u => u.active && !u.isGM && a.testUserPermission(u, "OWNER"))
+      checked: true   // players are always ticked; the GM unticks anyone who should not join
     }));
   const preset = FLAMES.find(f => f.hex === last);
   const flames = FLAMES.map(f => ({ ...f, checked: f.hex === (preset?.hex ?? DEFAULT_FLAME) }));
   return { scenes, actors, flames, custom: { hex: last, set: !preset, checked: !preset }, flameName: preset?.name ?? "Custom", hasScenes: scenes.length > 0 };
 }
+
+/** A token whose actor belongs to a player: these only ever join through the Players list, never as enemies. */
+const isPlayerToken = t => !!t?.actor?.hasPlayerOwner;
+
+/**
+ * NPC-type actors that a player owns (a Find Familiar, a summoned beast, a companion token...). They are not characters, so they
+ * are not in the Players list; each of their tokens on the scene gets its own die, rolled by the owning player.
+ */
+const isPetToken = t => !!t?.actorId && !!t.actor?.hasPlayerOwner && t.actor.type !== "character";
+function petTokens(scene) { return scene.tokens.filter(isPetToken).sort((a, b) => a.name.localeCompare(b.name)); }
+
+const DISPO_ORDER = { [-1]: 0, 0: 1, 1: 2, [-2]: 3 };   // hostile, neutral, friendly, secret
+const DISPO_CLASS = { [-1]: "hostile", 0: "neutral", 1: "friendly", [-2]: "secret" };
+const byDispo = (a, b) => ((DISPO_ORDER[a.disposition] ?? 9) - (DISPO_ORDER[b.disposition] ?? 9)) || (a.hidden - b.hidden) || a.name.localeCompare(b.name);
+
+/** Every token on a scene that can join as a non-player combatant: hostile first, then neutral, friendly, secret. */
+function boardTokens(scene) {
+  return scene.tokens.filter(t => t.actorId && !isPlayerToken(t)).sort(byDispo);
+}
+/** The hostile tokens that are visible: what "Start" pulls in when nothing is selected. */
+function foeTokens(scene) {
+  return boardTokens(scene).filter(t => t.disposition === CONST.TOKEN_DISPOSITIONS.HOSTILE && !t.hidden);
+}
+/** Tokens the GM currently has selected on the canvas (only possible for the scene being viewed). */
+function selectedTokens(scene) {
+  if (!scene || canvas?.scene?.id !== scene.id) return [];
+  return (canvas.tokens?.controlled ?? []).map(t => t.document).filter(d => d?.actorId && !isPlayerToken(d)).sort(byDispo);
+}
+const foeImg = t => {
+  const src = t.texture?.src;
+  return src && !/\.(webm|mp4|m4v)$/i.test(src) ? src : (t.actor?.img || "icons/svg/mystery-man.svg");
+};
 
 /** GM launcher: a floating panel (not a Foundry window). Grab the header and it moves immediately; position is remembered per client. */
 class EncounterPanel {
@@ -150,6 +197,13 @@ class EncounterPanel {
     document.body.appendChild(el);
     this.form = el.querySelector("form");
     await this.renderBody();
+    const sc = this.form.querySelector('select[name="sceneId"]');
+    if (sc && canvas?.scene && game.scenes.has(canvas.scene.id)) sc.value = canvas.scene.id;   // the scene the GM is looking at
+    this.renderBoard(); this.syncPlayers();
+    this._onControl = foundry.utils.debounce(() => { if (this.useSelected() && Date.now() - (this._uiAt ?? 0) > 400) this.applyTicks(); }, 80);
+    Hooks.on("controlToken", this._onControl);
+    this._onScene = foundry.utils.debounce(() => this.renderBoard(), 120);
+    for (const h of ["canvasReady", "createToken", "deleteToken", "updateToken"]) Hooks.on(h, this._onScene);
     this.clampPos(); this.place(); this.bind();
     this._onResize = () => { this.clampPos(); this.place(); };
     addEventListener("resize", this._onResize);
@@ -159,6 +213,100 @@ class EncounterPanel {
     const render = foundry.applications?.handlebars?.renderTemplate ?? globalThis.renderTemplate;
     this.form.innerHTML = await render(PANEL_TEMPLATE, await launcherContext());
     decorateLauncher(this.el);
+  }
+
+  /** Players always start ticked (even when a fight is already running); the GM unticks anyone who should not join. */
+  syncPlayers() {
+    this.form.querySelectorAll('input[name="actor"]').forEach(i => { i.checked = true; });
+    this.syncCounts();
+  }
+
+  /** True while the list follows the canvas selection (and clicking a chip also selects that token on the canvas). */
+  useSelected() { return !!this.form.querySelector('input[name="useSel"]')?.checked; }
+
+  /**
+   * The list of every token on the board (hostile first). A chip is ticked when the token is part of the encounter:
+   * the tokens selected on the canvas when there are any ("Selected tokens" on), otherwise the visible hostile ones.
+   * Hidden tokens are only ticked when you select them yourself. Click a chip to tick / untick it.
+   */
+  renderBoard() {
+    const box = this.form.querySelector(".efx-foe-strip"); if (!box) return;
+    const scene = game.scenes.get(this.form.querySelector('select[name="sceneId"]')?.value);
+    box.replaceChildren();
+    const tokens = scene ? boardTokens(scene) : [];
+    if (!tokens.length) {
+      const p = document.createElement("p"); p.className = "efx-foe-empty";
+      p.textContent = scene ? "No tokens on this scene" : "Pick a scene to list its tokens";
+      box.append(p);
+    }
+    for (const t of tokens) {
+      const lab = document.createElement("label");
+      lab.className = `efx-actor-mini efx-foe-mini d-${DISPO_CLASS[t.disposition] ?? "neutral"}` + (t.hidden ? " is-hidden" : "");
+      lab.title = `${t.name}${t.hidden ? " (hidden)" : ""}`;
+      lab.dataset.token = t.id;
+      const inp = document.createElement("input");
+      inp.type = "checkbox"; inp.name = "foe"; inp.value = t.id;
+      const img = document.createElement("img"); img.src = foeImg(t); img.alt = t.name;
+      img.addEventListener("error", () => { img.src = "icons/svg/mystery-man.svg"; }, { once: true });
+      const nm = document.createElement("span"); nm.textContent = t.name;
+      lab.append(inp, img, nm);
+      if (t.hidden) { const eye = document.createElement("i"); eye.className = "fa-solid fa-eye-slash efx-foe-eye"; lab.append(eye); }
+      box.append(lab);
+    }
+    this.renderPets(scene);
+    this.applyTicks();
+  }
+
+  /** Player-owned NPC tokens (familiars, summons): always ticked like the players, untick one to leave it out. */
+  renderPets(scene) {
+    const strip = this.form.querySelector(".efx-pet-strip"), label = this.form.querySelector(".efx-pets-label");
+    if (!strip) return;
+    const keep = new Set([...strip.querySelectorAll('input[name="pet"]')].filter(i => !i.checked).map(i => i.value));   // remember unticked ones across re-renders
+    strip.replaceChildren();
+    const pets = scene ? petTokens(scene) : [];
+    strip.hidden = label.hidden = !pets.length;
+    for (const t of pets) {
+      const lab = document.createElement("label");
+      lab.className = "efx-actor-mini efx-pet-mini";
+      lab.title = `${t.name}${t.actor?.name && t.actor.name !== t.name ? ` (${t.actor.name})` : ""}`;
+      const inp = document.createElement("input");
+      inp.type = "checkbox"; inp.name = "pet"; inp.value = t.id; inp.checked = !keep.has(t.id);
+      const img = document.createElement("img"); img.src = foeImg(t); img.alt = t.name;
+      img.addEventListener("error", () => { img.src = "icons/svg/mystery-man.svg"; }, { once: true });
+      const nm = document.createElement("span"); nm.textContent = t.name;
+      lab.append(inp, img, nm);
+      strip.append(lab);
+    }
+  }
+
+  /** Tick the chips that match the canvas selection (or, with nothing selected, the visible hostile tokens). */
+  applyTicks() {
+    const scene = game.scenes.get(this.form.querySelector('select[name="sceneId"]')?.value);
+    let want = new Set();
+    if (scene) {
+      const picked = this.useSelected() ? selectedTokens(scene) : [];
+      want = new Set((picked.length ? picked : foeTokens(scene)).map(t => t.id));
+    }
+    this.form.querySelectorAll('input[name="foe"]').forEach(i => { i.checked = want.has(i.value); });
+    this.syncCounts();
+  }
+
+  /** Mirror a chip click onto the canvas so the token is selected / released there too. */
+  mirrorToCanvas(tokenId, on) {
+    try {
+      const scene = game.scenes.get(this.form.querySelector('select[name="sceneId"]')?.value);
+      if (!scene || canvas?.scene?.id !== scene.id || !this.useSelected()) return;
+      const obj = canvas.tokens?.get(tokenId);
+      if (!obj) return;
+      this._uiAt = Date.now();   // our own selection change: the hook below must not undo the ticks
+      if (on) obj.control({ releaseOthers: false }); else obj.release();
+    } catch (e) { /* cosmetic */ }
+  }
+
+  syncCounts() {
+    const n = name => this.form.querySelectorAll(`input[name="${name}"]:checked`).length;
+    const set = (k, v) => { const el = this.form.querySelector(`[data-count="${k}"]`); if (el) el.textContent = v; };
+    set("foe", n("foe")); set("pc", n("actor") + n("pet")); set("board", this.form.querySelectorAll('input[name="foe"]').length);
   }
 
   flameLabel() {
@@ -201,7 +349,20 @@ class EncounterPanel {
       sw.style.setProperty("--sw", e.target.value); sw.classList.add("set");
       sw.querySelector('input[type="radio"]').checked = true; this.flameLabel();
     });
-    el.addEventListener("change", e => { if (e.target.name === "flame") this.flameLabel(); });
+    el.addEventListener("change", e => {
+      const n = e.target.name;
+      if (n === "flame") this.flameLabel();
+      else if (n === "sceneId") { this.renderBoard(); this.syncPlayers(); }
+      else if (n === "useSel") this.applyTicks();
+      else if (n === "hostile") {   // quick select: every visible token on / off (hidden ones only when you pick them)
+        this.form.querySelectorAll('input[name="foe"]').forEach(i => {
+          const on = e.target.checked && !i.closest(".is-hidden");
+          if (i.checked !== on) { i.checked = on; this.mirrorToCanvas(i.value, on); }
+        });
+        this.syncCounts();
+      } else if (n === "foe") { this.mirrorToCanvas(e.target.value, e.target.checked); this.syncCounts(); }
+      else if (n === "actor" || n === "pet") this.syncCounts();
+    });
     el.addEventListener("keydown", e => { if (e.key === "Escape") this.close(); });
     this.form.addEventListener("submit", e => { e.preventDefault(); this.start(); });
   }
@@ -220,14 +381,16 @@ class EncounterPanel {
     if (!game.user.isGM) return;
     const fd = new FormData(this.form);
     const style = "fire", flame = flameOf(this.pickedFlame()).hex;
-    const sceneId = fd.get("sceneId"), actorIds = fd.getAll("actor"), hostile = fd.has("hostile");
+    const sceneId = fd.get("sceneId"), actorIds = fd.getAll("actor"), foeIds = fd.getAll("foe"), petIds = fd.getAll("pet");
     await game.settings.set(ID, "flame", flame);
     this.close();
-    launch({ sceneId, actorIds, hostile, style, flame });
+    launch({ sceneId, actorIds, foeIds, petIds, style, flame });
   }
 
   close() {
     removeEventListener("resize", this._onResize);
+    Hooks.off("controlToken", this._onControl);
+    for (const h of ["canvasReady", "createToken", "deleteToken", "updateToken"]) Hooks.off(h, this._onScene);
     this.el?.remove();
     EncounterPanel.#inst = null;
   }
@@ -255,20 +418,30 @@ function decorateLauncher(el) {
 
 /* ------------------------------------------------------------------ */
 /*  GM orchestration                                                   */
+/*  Only the active GM's client rolls, writes initiative to the Combat  */
+/*  and checks who may swap; everyone else just plays what it sends.   */
 /* ------------------------------------------------------------------ */
-const GM = { combatId: null, pcs: new Map(), rolled: new Set(), finishing: false, style: "fire", flame: DEFAULT_FLAME };
+const GM = {
+  combatId: null, pcs: new Map(), part: new Set(), rewound: new Set(), results: new Map(), mods: new Map(), alertUsed: new Set(),
+  finishing: false, swapping: false, style: "fire", flame: DEFAULT_FLAME
+};
 
 function broadcast(msg) { game.socket.emit(SOCKET, msg); onMessage(msg); }
 const ownersOf = c => game.users.filter(u => !u.isGM && c.actor?.testUserPermission(u, "OWNER"));
 
-async function launch({ sceneId, actorIds = [], hostile = true, style = "fire", flame = DEFAULT_FLAME }) {
+/**
+ * foeIds = the enemy tokens the GM ticked. Omit it (API use) and every *visible* hostile token is pulled;
+ * hidden tokens are only ever added when they are named in foeIds.
+ * selected: true = use the tokens selected on the canvas instead (when foeIds is omitted).
+ */
+async function launch({ sceneId, actorIds = [], foeIds = null, petIds = null, hostile = true, selected = false, style = "fire", flame = DEFAULT_FLAME }) {
   if (!game.user.isGM) return;
   if (!STYLES[style]) style = "fire";
   const scene = game.scenes.get(sceneId);
   if (!scene) return ui.notifications.error("Grim Encounter: scene not found.");
   flame = flameOf(flame).hex;
   const T = STYLES[style].t, t0 = Date.now();
-  GM.pcs = new Map(); GM.rolled = new Set(); GM.finishing = false; GM.combatId = null; GM.style = style; GM.flame = flame;
+  Object.assign(GM, { pcs: new Map(), part: new Set(), rewound: new Set(), results: new Map(), mods: new Map(), alertUsed: new Set(), finishing: false, swapping: false, combatId: null, style, flame });
 
   broadcast({ action: "intro", style, flame });
   await sleep(T.switch);
@@ -284,15 +457,22 @@ async function launch({ sceneId, actorIds = [], hostile = true, style = "fire", 
 
   // 2) Real Combat document: find or create, then add tokens
   try {
-    const combat = await ensureCombat(scene, actorIds, hostile);
+    const { combat, picked } = await ensureCombat(scene, actorIds, petIds ?? petTokens(scene).map(t => t.id), foeIds ?? (selected ? selectedTokens(scene).map(t => t.id) : hostile ? foeTokens(scene).filter(t => !t.hidden).map(t => t.id) : []));
     GM.combatId = combat.id;
 
     // 3) NPCs (and hidden combatants) roll silently; player characters wait for their own die
+    // A fight already running = reinforcements: enemies that already hold an initiative keep their place,
+    // players are only rolled when they were ticked, and the combat is not restarted (see finishOrder).
+    const reinforce = !!combat.started;
     const updates = [];
     for (const c of combat.combatants) {
+      if (!picked.has(c.tokenId)) continue;   // not chosen for this encounter: leave it alone
       const owners = ownersOf(c);
-      if (owners.length && !c.hidden) {
-        GM.pcs.set(c.id, { id: c.id, name: c.name, img: c.img, player: owners.map(u => u.name).join(", "), owners: owners.map(u => u.id) });
+      const isPC = owners.length && !c.hidden;
+      if (!isPC && reinforce && c.initiative != null) continue;
+      GM.part.add(c.id);
+      if (isPC) {
+        GM.pcs.set(c.id, { id: c.id, name: c.name, img: c.img, player: owners.map(u => u.name).join(", "), owners: owners.map(u => u.id), alert: hasAlert(c.actor), insp: hasInspiration(c.actor) });
       } else {
         const r = await rollInit(c);
         updates.push({ _id: c.id, initiative: r.total });
@@ -307,20 +487,22 @@ async function launch({ sceneId, actorIds = [], hostile = true, style = "fire", 
 
   await sleep(Math.max(0, T.dice - (Date.now() - t0)));
   if (!GM.pcs.size) { GM.finishing = true; return finishOrder(0); }
-  broadcast({ action: "dice", dice: [...GM.pcs.values()], style, flame: GM.flame });
+  broadcast({ action: "dice", dice: [...GM.pcs.values()], mods: {}, style, flame: GM.flame });
 }
 
-async function ensureCombat(scene, actorIds, hostile) {
+async function ensureCombat(scene, actorIds, petIds, foeIds) {
   let combat = game.combats.find(c => c.scene?.id === scene.id);
   if (!combat) combat = await getDocumentClass("Combat").create({ scene: scene.id, active: true });
   if (!combat.active && typeof combat.activate === "function") await combat.activate();
 
-  const wanted = new Set(actorIds), found = new Set(), data = [];
+  const wanted = new Set(actorIds), pets = new Set(petIds), foes = new Set(foeIds), found = new Set(), picked = new Set(), data = [];
   for (const t of scene.tokens) {
     const isPC = t.actorId && wanted.has(t.actorId);
-    const isFoe = hostile && t.disposition === CONST.TOKEN_DISPOSITIONS.HOSTILE;
-    if (!isPC && !isFoe) continue;
+    const isPet = pets.has(t.id) && isPetToken(t);
+    const isFoe = foes.has(t.id) && !isPlayerToken(t);
+    if (!isPC && !isPet && !isFoe) continue;
     if (isPC) found.add(t.actorId);
+    picked.add(t.id);
     if (combat.combatants.some(c => c.tokenId === t.id)) continue;
     data.push({ tokenId: t.id, sceneId: scene.id, actorId: t.actorId, hidden: t.hidden });
   }
@@ -328,28 +510,114 @@ async function ensureCombat(scene, actorIds, hostile) {
 
   const missing = actorIds.filter(id => !found.has(id)).map(id => game.actors.get(id)?.name).filter(Boolean);
   if (missing.length) ui.notifications.warn(`No token in this scene for: ${missing.join(", ")}`);
-  return combat;
+  return { combat, picked };
 }
 
-async function rollInit(c) {
-  const roll = c.getInitiativeRoll();
+/**
+ * Roll a combatant's initiative. The system's own initiative formula is the starting point
+ * (ability modifier, bonuses, tiebreaker); the GM's choices are layered on top of it:
+ * advantage / disadvantage replaces the d20 with 2d20kh / 2d20kl, +1d4 and +1d8 are added.
+ * Returns { d20: [each d20], nat: the kept d20, bonus: [{ faces, value }], total }.
+ */
+async function rollInit(c, mods = NO_MODS) {
+  const base = c.getInitiativeRoll();
+  let formula = base.formula;
+  const keep = mods.adv ? "kh" : mods.dis ? "kl" : null;
+  if (keep) formula = formula.replace(/\b\d*d20(k[hl]\d*)?/i, `2d20${keep}`);
+  if (mods.d4) formula += " + 1d4";
+  if (mods.d8) formula += " + 1d8";
+  const roll = formula === base.formula ? base : new Roll(formula, base.data);
   await roll.evaluate();
   const d20 = roll.dice.find(d => d.faces === 20);
+  const d20s = (d20?.results ?? []).map(r => r.result);
   const kept = d20?.results.find(r => r.active)?.result;
-  return { nat: clamp(kept ?? Math.round(roll.total), 1, 20), total: roll.total };
+  const bonus = roll.dice.filter(d => d.faces === 4 || d.faces === 8).flatMap(d => d.results.map(r => ({ faces: d.faces, value: r.result })));
+  const nat = clamp(kept ?? d20s[0] ?? Math.round(roll.total), 1, 20);
+  return { d20: d20s.length ? d20s : [nat], nat, bonus, total: Math.round(roll.total * 100) / 100 };
 }
 
-async function gmRollOne(id, userId) {
+async function gmRollOne(id, userId, reroll = false) {
   const combat = game.combats.get(GM.combatId);
   const c = combat?.combatants.get(id);
   const user = game.users.get(userId);
-  if (!c || !user || !GM.pcs.has(id) || GM.rolled.has(id)) return;
+  if (!c || !user || !GM.pcs.has(id) || GM.finishing || GM.swapping) return;
+  if (GM.results.has(id) && GM.results.get(id) === null) return;   // a roll for this die is already in flight
   if (!user.isGM && !c.actor?.testUserPermission(user, "OWNER")) return;
-  GM.rolled.add(id);
-  const r = await rollInit(c);
-  await c.update({ initiative: r.total });
-  broadcast({ action: "rolled", id, nat: r.nat, total: Math.round(r.total * 100) / 100 });
-  if (GM.rolled.size >= GM.pcs.size && !GM.finishing) { GM.finishing = true; finishOrder(2300); }
+  // A finished die rolls again only for: the GM's Reroll button, a die rewound by Inspiration, or the free-reroll setting.
+  if (GM.results.has(id)) {
+    const ok = (reroll && (user.isGM || game.settings.get(ID, "freeReroll"))) || GM.rewound.has(id);
+    if (!ok) return;
+  }
+  const prev = GM.results.get(id), wasRewound = GM.rewound.has(id);
+  GM.results.set(id, null);   // in flight: a double click cannot start two rolls at once
+  try {
+    const r = await rollInit(c, GM.mods.get(id) ?? NO_MODS);
+    await c.update({ initiative: r.total });
+    GM.results.set(id, r); GM.rewound.delete(id);
+    broadcast({ action: "rolled", id, result: r });
+  } catch (err) {
+    console.error(`${ID} | initiative roll failed`, err);
+    if (prev) GM.results.set(id, prev); else GM.results.delete(id);
+    if (wasRewound) GM.rewound.add(id);
+    ui.notifications.error(`Grim Encounter: could not roll initiative for ${c.name}.`);
+  }
+}
+
+/**
+ * Spend Heroic Inspiration to roll again. The actor's Inspiration is used up, the finished result is thrown away
+ * (the combatant has no initiative until the new roll) and the column rewinds until its die is rolled again.
+ */
+async function gmInspire(id, userId) {
+  const combat = game.combats.get(GM.combatId);
+  const c = combat?.combatants.get(id), user = game.users.get(userId);
+  if (!c || !user || !GM.pcs.has(id) || GM.finishing || GM.swapping) return;
+  const r = GM.results.get(id);
+  if (!r || GM.rewound.has(id)) return;   // only a finished roll can be undone, and only once per Inspiration
+  if (!user.isGM && !c.actor?.testUserPermission(user, "OWNER")) return;
+  if (!hasInspiration(c.actor)) return;
+  try {
+    await c.actor.update({ "system.attributes.inspiration": false });
+    await c.update({ initiative: null });
+    GM.results.delete(id); GM.rewound.add(id);
+    GM.pcs.get(id).insp = false;
+    broadcast({ action: "inspired", id });
+  } catch (err) {
+    console.error(`${ID} | inspiration failed`, err);
+    ui.notifications.error(`Grim Encounter: could not use Inspiration for ${c.name}.`);
+  }
+}
+
+/**
+ * Swap two rolled results. The GM may swap anyone; a player may swap once, from a character
+ * of theirs that has the Alert feat, with another player character.
+ */
+async function gmSwap(a, b, userId) {
+  const combat = game.combats.get(GM.combatId);
+  const A = combat?.combatants.get(a), B = combat?.combatants.get(b), user = game.users.get(userId);
+  const ra = GM.results.get(a), rb = GM.results.get(b);
+  if (!A || !B || !user || a === b || !ra || !rb || GM.finishing || GM.swapping) return;
+  const viaAlert = !user.isGM;
+  if (viaAlert && (!A.actor?.testUserPermission(user, "OWNER") || !GM.pcs.get(a)?.alert || GM.alertUsed.has(a))) return;
+  GM.swapping = true;
+  try {
+    await combat.updateEmbeddedDocuments("Combatant", [{ _id: a, initiative: rb.total }, { _id: b, initiative: ra.total }]);
+    GM.results.set(a, rb); GM.results.set(b, ra);
+    if (viaAlert) GM.alertUsed.add(a);
+    broadcast({ action: "swapped", a, b, ra: rb, rb: ra, alertUsed: viaAlert });
+    await sleep(calm() ? 200 : 1900);   // let the reels finish before anything else can happen
+  } catch (err) {
+    console.error(`${ID} | initiative swap failed`, err);
+    ui.notifications.error("Grim Encounter: could not swap initiative.");
+  } finally {
+    GM.swapping = false;
+  }
+}
+
+function beginCombat() {
+  if (!game.user.isGM || GM.finishing || GM.swapping) return;
+  if ([...GM.pcs.keys()].some(id => !GM.results.get(id))) return;
+  GM.finishing = true;
+  finishOrder(0);
 }
 
 async function finishOrder(wait) {
@@ -357,12 +625,12 @@ async function finishOrder(wait) {
   const combat = game.combats.get(GM.combatId);
   if (!combat) return broadcast({ action: "close" });
   const order = combat.combatants.contents
-    .filter(c => !c.hidden && (SHOW_NPC_IN_ORDER || GM.pcs.has(c.id)))
+    .filter(c => GM.part.has(c.id) && !c.hidden && (SHOW_NPC_IN_ORDER || GM.pcs.has(c.id)))
     .sort((a, b) => (b.initiative ?? -999) - (a.initiative ?? -999))
     .map(c => ({ name: c.name, img: (c.actor?.img && !/mystery-man/.test(c.actor.img) ? c.actor.img : c.img), total: Math.round((c.initiative ?? 0) * 100) / 100, pc: GM.pcs.has(c.id) }));
   broadcast({ action: "order", order, style: GM.style, flame: GM.flame });
   await sleep(1800 + order.length * 110 + 3200);
-  try { await combat.startCombat(); ui.combat?.activate?.(); } catch (e) { console.warn(`${ID} |`, e); }
+  try { if (!combat.started) await combat.startCombat(); ui.combat?.activate?.(); } catch (e) { console.warn(`${ID} |`, e); }
   broadcast({ action: "close" });
 }
 
@@ -373,11 +641,20 @@ function onMessage(msg) {
   switch (msg.action) {
     case "intro": return playIntro(msg);
     case "dice": return showDice(msg);
+    case "mods": return playMods(msg);
     case "rolled": return playRolled(msg);
+    case "swapped": return playSwapped(msg);
+    case "inspired": return playInspired(msg);
     case "order": return playOrder(msg);
     case "close": return closeStage();
     case "rollRequest":
-      if (game.users.activeGM?.isSelf) gmRollOne(msg.id, msg.userId);
+      if (game.users.activeGM?.isSelf) gmRollOne(msg.id, msg.userId, !!msg.reroll);
+      return;
+    case "inspireRequest":
+      if (game.users.activeGM?.isSelf) gmInspire(msg.id, msg.userId);
+      return;
+    case "swapRequest":
+      if (game.users.activeGM?.isSelf) gmSwap(msg.a, msg.b, msg.userId);
   }
 }
 
@@ -401,19 +678,61 @@ function syncGrimCore() {
   try {
     const targets = [document.getElementById("efx-root"), document.getElementById("efx-panel")].filter(Boolean);
     const core = game.modules.get("grim-core");
-    const palette = core?.active && typeof core.api?.palette === "function" ? core.api.palette() : null;
+    let palette = null, preset = "crimson";
+    if (core?.active && typeof core.api?.palette === "function") {
+      const theme = core.api.getTheme?.() ?? {};
+      preset = theme.preset ?? "crimson";
+      if (!(theme.off ?? []).includes(ID)) palette = core.api.palette();   // unticked under "Modules that follow": keep our own colours
+    }
+    // A light theme (Amethyst, or Custom on light) has dark text tokens; the cards stay dark, so give them light text.
+    const light = palette && luma(palette.bone) < luma(palette.ink);
+    // With Grim Core active the initiative stage (headline, order title, sparks, backdrop) always follows Core, Crimson included,
+    // never the flame colour picked in the launcher (that one only colours the fire cinematic).
+    const stage = !!palette;
     for (const el of targets) {
-      for (const k of [...el.style].filter(n => n.startsWith("--ge-"))) el.style.removeProperty(k);   // forget a previous theme
+      for (const k of [...el.style].filter(n => n.startsWith("--ge-") || n.startsWith("--core-"))) el.style.removeProperty(k);   // forget a previous theme
       if (!palette) continue;
       for (const [key, value] of Object.entries(palette)) el.style.setProperty(`--ge-${key}`, value);
       if (palette["accent-soft"]) el.style.setProperty("--ge-soft", palette["accent-soft"]);
+      if (light) {
+        el.style.setProperty("--ge-card-bone", "#f4effa");
+        el.style.setProperty("--ge-card-soft", `color-mix(in srgb, ${palette.ember} 55%, #ffffff)`);
+      }
+      if (stage && el.id === "efx-root") paintStage(el, palette);
     }
   } catch (e) { console.warn(`${ID} | Grim Core theme unavailable`, e); }
 }
+/**
+ * The initiative stage (rune streams, headline, names, glow, sparks, backdrop) in Grim Core's colours.
+ * The fire is authored orange, so the sparks and backdrop are turned to the theme's hue like a flame colour is.
+ */
+function paintStage(el, p) {
+  const ember = p.ember, soft = p["accent-soft"] ?? ember, f = flameOf(ember);
+  const set = (k, v) => el.style.setProperty(`--core-${k}`, v);
+  set("acc", ember);
+  set("hi", `color-mix(in srgb, ${ember} 78%, #ffffff)`);
+  set("glow", ember);
+  set("soft", `color-mix(in srgb, ${soft} 55%, #ffffff)`);
+  set("bd1", `color-mix(in srgb, ${ember} 14%, rgba(0, 0, 0, .82))`);
+  set("rot", `${f.rot}deg`); set("sat", f.sat.toFixed(2)); set("bri", f.bri.toFixed(2));
+}
+/** Relative brightness 0..1 of a #rrggbb colour (anything else counts as mid-grey). */
+function luma(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex ?? "").trim());
+  if (!m) return .5;
+  const n = parseInt(m[1], 16);
+  return (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255;
+}
+// Grim Core's theme changed during the session: recolour the panel and the stage without a reload.
+Hooks.on("updateSetting", setting => { if (setting?.key === "grim-core.theme") setTimeout(syncGrimCore, 60); });
 const live = { fx: new Set(), dsparks: null, run: 0 };
 const track = fx => { live.fx.add(fx); return fx; };
 function closeAll() {
   live.run++;
+  const stage = root().querySelector(".efx-dice-stage");
+  if (stage?._onResize) removeEventListener("resize", stage._onResize);
+  if (stage?._onKey) removeEventListener("keydown", stage._onKey);
+  Loop.clear();
   for (const fx of live.fx) fx.stop?.();
   live.fx.clear();
   live.dsparks?.stop(); live.dsparks = null;
@@ -670,18 +989,6 @@ INTRO.fire = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  3D d20 (CSS icosahedron)                                           */
-/* ------------------------------------------------------------------ */
-const PHI = (1 + Math.sqrt(5)) / 2;
-const VERTS = [[-1, PHI, 0], [1, PHI, 0], [-1, -PHI, 0], [1, -PHI, 0], [0, -1, PHI], [0, 1, PHI], [0, -1, -PHI], [0, 1, -PHI], [PHI, 0, -1], [PHI, 0, 1], [-PHI, 0, -1], [-PHI, 0, 1]];
-const FACES = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-  [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
-const sub = (a, b) => a.map((v, i) => v - b[i]);
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const norm = a => { const l = Math.hypot(...a); return a.map(v => v / l); };
-
-/* ------------------------------------------------------------------ */
 /*  Dice So Nice look (read-only; DSN is optional)                     */
 /*  A player's DSN customisation lives on their User document under    */
 /*  flags["dice-so-nice"].appearance. We read it and paint the CSS die */
@@ -772,198 +1079,387 @@ function dsnDebug(userId = game.user.id) {
   };
 }
 
-const lightFor = (look, lit) => {
-  const mat = look?.material ?? "plastic";
-  const hi = mat === "metal" || mat === "chrome" ? 0.5 : 0.32, lo = mat === "metal" || mat === "chrome" ? 0.62 : 0.5;
-  return `linear-gradient(160deg,rgba(255,255,255,${(lit * hi).toFixed(3)}),rgba(0,0,0,${(lo - lit * 0.36).toFixed(3)}))`;
-};
+/* ------------------------------------------------------------------ */
+/*  Initiative stage                                                   */
+/*  One column per player character. Behind each column runes stream   */
+/*  past: down in the 1st, 3rd, 5th... column, up in the 2nd, 4th...   */
+/*  The die (or dice) rolls in place; the GM can give advantage,       */
+/*  disadvantage, +1d4 or +1d8 (Gift of Alacrity), re-roll a column,   */
+/*  and swap two results. A character with the Alert feat may swap     */
+/*  once with an ally. The GM starts combat when everyone is ready.    */
+/* ------------------------------------------------------------------ */
+const RUNE_GLYPHS = "ᚠᚢᚦᚨᚱᚲᚷᚹᚺᚾᛁᛃᛇᛈᛉᛊᛏᛒᛖᛗᛚᛜᛞᛟ᛭";
+const RUNE_LANES = 4;
 
-function buildDie(die, L, { h = 5, s: sat = 78 } = {}, look = null) {
-  const sc = L / 2, H = L * Math.sqrt(3) / 2, light = norm([-0.4, -0.7, 1]), front = [];
-  const mat = look?.material;
-  const sheen = mat === "metal" || mat === "chrome"
-    ? `linear-gradient(115deg,transparent 28%,rgba(255,255,255,${mat === "chrome" ? .5 : .34}) 47%,transparent 64%),` : "";
-  const baseOf = i => !look ? null
-    : look.bg.length > 1 ? `linear-gradient(${120 + (i * 47) % 90}deg,${look.bg.join(",")})` : `linear-gradient(${look.bg[0]},${look.bg[0]})`;
-  if (look) {
-    die.style.setProperty("--num", look.fg);
-    die.style.setProperty("--nsh", `0 0 3px ${look.outline},0 0 1px ${look.outline},0 1px 2px ${look.outline}`);
-    if (look.font) die.style.setProperty("--nfont", `"${look.font.replace(/"/g, "")}",Georgia,serif`);
-    if (mat === "glass") die.style.setProperty("--bop", ".8");
+/** The rune streams behind one column. Each lane holds its text twice so the loop is seamless. */
+function runeLanes() {
+  let html = "";
+  for (let l = 0; l < RUNE_LANES; l++) {
+    const text = Array.from({ length: 26 }, () => RUNE_GLYPHS[(Math.random() * RUNE_GLYPHS.length) | 0]).join("\n");
+    const style = `--d:${rand(7, 15).toFixed(1)}s;--o:${rand(0.45, 1).toFixed(2)};--fs:${rand(13, 19).toFixed(0)}px;animation-delay:-${rand(0, 15).toFixed(1)}s`;
+    html += `<span class="lane"><span class="lane-in" style="${style}"><b>${text}</b><b>${text}</b></span></span>`;
   }
-  FACES.forEach((f, i) => {
-    const [A, B, C] = f.map(k => VERTS[k].map(v => v * sc));
-    const cen = [0, 1, 2].map(k => (A[k] + B[k] + C[k]) / 3);
-    let ex = norm(sub(C, B));
-    const M = [0, 1, 2].map(k => (B[k] + C[k]) / 2), ey = norm(sub(M, A));
-    let n = cross(ex, ey);
-    if (dot(n, cen) < 0) { ex = ex.map(v => -v); n = n.map(v => -v); }
-    const P = [0, 1, 2].map(k => cen[k] - ex[k] * (L / 2) - ey[k] * (2 * H / 3));
-    const el = document.createElement("div"); el.className = "efx-face";
-    const lit = Math.max(0, dot(n, light));
-    let body, edge, blend = "";
-    if (look) {
-      const layers = [lightFor(look, lit)];
-      if (sheen) layers.push(sheen.slice(0, -1));
-      if (look.texture) layers.push(`url("${look.texture}") center/160% auto`);
-      layers.push(baseOf(i));
-      body = layers.join(","); edge = look.edge;
-      if (look.texture) blend = layers.map((_, k) => k === layers.length - 2 ? "soft-light" : "normal").join(",");
-    } else {
-      body = `linear-gradient(160deg,hsl(${h} ${sat}% ${26 + lit * 24}%),hsl(${h} ${Math.max(0, sat - 6)}% ${10 + lit * 12}%))`;
-      edge = `hsl(${h} ${Math.min(sat, 30)}% 7%)`;
-    }
-    el.style.cssText = `width:${L}px;height:${H}px;--fs:${Math.round(L * 0.29)}px;--edge:${edge};--body:${body};` +
-      (blend ? `--blend:${blend};` : "") + `transform:matrix3d(${[...ex, 0, ...ey, 0, ...n, 0, ...P, 1].join()})`;
-    el.innerHTML = `<b>${i + 1}</b>`;
-    die.appendChild(el);
-    front.push([ex[0], ey[0], n[0], 0, ex[1], ey[1], n[1], 0, ex[2], ey[2], n[2], 0, 0, 0, 0, 1]);
-  });
-  return front;
+  return html;
 }
 
-function randMatrix() {
-  let q = [0, 0, 0, 0].map(() => Math.random() * 2 - 1);
-  const l = Math.hypot(...q); q = q.map(v => v / l);
-  const [x, y, z, w] = q;
-  return [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
-    2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
-    2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0, 0, 0, 0, 1];
+/** Runes run faster while that column's dice are in the air. */
+function runeSpeed(info, rate) {
+  try { info.el.querySelectorAll(".lane-in").forEach(l => l.getAnimations().forEach(a => a.updatePlaybackRate(rate))); } catch (e) { /* cosmetic */ }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Dice stage: 1 die per player, everyone rolls at the same time      */
-/* ------------------------------------------------------------------ */
-const TILT = -18, IDLE_MS = 5200;   // idle spin: one turn per 5.2 s, tilted toward the viewer
+const NO_MODS = Object.freeze({ adv: false, dis: false, d4: false, d8: false });
 const stageEl = () => root().querySelector(".efx-dice-stage");
 
-function showDice({ dice = [], style = "fire", flame = DEFAULT_FLAME } = {}) {
+/** How many of each die a column shows for a set of modifiers (before the roll). */
+const diceFor = (mods = NO_MODS) => ({ d20: mods.adv || mods.dis ? 2 : 1, d4: mods.d4 ? 1 : 0, d8: mods.d8 ? 1 : 0 });
+/** ...and after the roll, straight from the result (an actor's own advantage also shows as two dice). */
+const diceOf = (r) => ({ d20: Math.max(1, r.d20.length), d4: r.bonus.filter(b => b.faces === 4).length, d8: r.bonus.filter(b => b.faces === 8).length });
+
+/** Does this actor currently hold Heroic Inspiration (dnd5e: system.attributes.inspiration)? */
+function hasInspiration(actor) {
+  try { return !!actor?.system?.attributes?.inspiration; } catch (e) { return false; }
+}
+
+/** Does this actor have the Alert feat (2024: swap initiative with a willing ally)? */
+function hasAlert(actor) {
+  try {
+    return !!actor?.items?.some(i => i.type === "feat" && (i.system?.identifier === "alert" || /^alert$/i.test(String(i.name).trim())));
+  } catch (e) { return false; }
+}
+
+/** The die look for a column: the owner's Dice So Nice colours when available, else Grim red. */
+function skinFor(d) { return d.owners?.includes(game.user.id) ? game.user.id : d.owners?.[0]; }
+
+/** Draw the d20 with the full Dice So Nice look (preset, texture, theme)? Needs DSN, the setting, and a working DSN scene. */
+function useDsnDice() {
+  try { return !!game.settings.get(ID, "dsn") && !!game.settings.get(ID, "dsnFull") && dsnOn() && dsnDiceAvailable(); } catch (e) { return false; }
+}
+
+function lookFor(d) {
+  const skin = skinFor(d);
+  const dsn = skin ? dsnLook(skin) : null;
+  return dsn ? { body: dsn.bg[0], label: dsn.fg, edge: dsn.edge } : { ...DEFAULT_LOOK };
+}
+
+function showDice({ dice = [], mods = {}, style = "fire", flame = DEFAULT_FLAME } = {}) {
   if (!STYLES[style]) style = "fire";
   stageEl()?.remove(); live.dsparks?.stop();
-  const F = flameOf(flame), n = dice.length;
-  const S = { ...STYLES[style], die: { ...STYLES[style].die, h: (STYLES[style].die.h + F.rot + 360) % 360, s: F.sat < 1 ? Math.round(78 * F.sat) : 78 } };
-  const L = n <= 3 ? 100 : n <= 5 ? 84 : n <= 7 ? 68 : 54;
-  const size = Math.round(L * 3);
-  const isGM = game.user.isGM;
+  const F = flameOf(flame), n = dice.length, isGM = game.user.isGM;
   const stage = document.createElement("div");
-  stage.className = `efx-dice-stage st-${style}`;
+  stage.className = `efx-dice-stage st-${style}${isGM ? " is-gm" : ""}`;
   paintFlame(stage, F.hex);
+  if (!root().style.getPropertyValue("--core-acc")) stage.style.setProperty("--gen-accent", F.hex);   // with a Grim Core theme the stage accent comes from Core
+  stage.style.setProperty("--gen-n", String(Math.max(1, n)));
   stage.innerHTML = `
     <div class="efx-backdrop"></div>
     <canvas class="efx-sparks"></canvas>
-    <div class="efx-headline">ROLL INITIATIVE</div>
-    <div class="efx-dice-row"></div>
+    <div class="efx-headline">INITIATIVE</div>
+    <div class="gen-row"></div>
     <div class="efx-order"></div>
-    ${isGM ? `<button type="button" class="efx-gm-roll">Roll All Remaining</button>` : ""}`;
+    ${isGM ? `<div class="gen-foot">
+      <button type="button" class="gen-btn" data-act="roll-all">Roll All Remaining</button>
+      <button type="button" class="gen-btn gen-begin" data-act="begin" disabled>Begin Combat</button>
+    </div>` : ""}`;
   root().appendChild(stage);
   stage._sparks = live.dsparks = new Sparks(stage.querySelector(".efx-sparks"));
-  stage._slots = new Map(); stage._L = L; stage._colors = S.colors;
+  stage._colors = STYLES[style].colors;
+  stage._cols = new Map();
+  stage._pick = null;   // column id whose owner is choosing someone to swap with
 
-  const row = stage.querySelector(".efx-dice-row");
+  const row = stage.querySelector(".gen-row");
+  const canFree = isGM || !!game.settings.get(ID, "freeReroll");
   for (const d of dice) {
     const mine = isGM || d.owners.includes(game.user.id);
-    const slot = document.createElement("div");
-    slot.className = `efx-slot${mine ? " mine" : ""}`;
-    slot.style.width = `${size * 1.05}px`;
-    slot.innerHTML = `
-      <div class="efx-aura"></div>
-      <div class="efx-scene3d" style="width:${size}px;height:${size}px;perspective:${L * 9}px">
-        <div class="efx-spin"><div class="efx-die ${mine ? "gm" : ""}"></div></div>
+    const col = document.createElement("div");
+    col.className = `gen-col${mine ? " mine" : ""}`;
+    col.dataset.id = d.id;
+    col.innerHTML = `
+      <div class="gen-runes" aria-hidden="true">${runeLanes()}</div>
+      <div class="gen-dice" ${mine ? 'role="button" tabindex="0"' : ""}><div class="gen-d20s"></div><div class="gen-bonus"></div></div>
+      <div class="gen-res">${mine ? '<span class="hint">Click the die</span>' : '<span class="hint dim">Waiting...</span>'}</div>
+      <div class="gen-name">${esc(d.name)}</div>
+      <div class="gen-player">${esc(d.player)}</div>
+      <div class="gen-mods">
+        <button type="button" data-mod="adv">Adv</button><button type="button" data-mod="dis">Dis</button>
+        <button type="button" data-mod="d8">+d8</button>
       </div>
-      <div class="efx-res">${mine ? '<span class="hint">Click the die</span>' : '<span class="hint dim">Waiting...</span>'}</div>
-      <div class="efx-name">${esc(d.name)}</div>
-      <div class="efx-player">${esc(d.player)}</div>`;
-    row.appendChild(slot);
-    const die = slot.querySelector(".efx-die");
-    const skin = d.owners?.includes(game.user.id) ? game.user.id : d.owners?.[0];
-    const look = skin ? dsnLook(skin) : null;
-    const front = buildDie(die, L, S.die, look);
-    const spin = slot.querySelector(".efx-spin");
-    const rest = randMatrix();                               // resting orientation while it idles
-    die.style.transform = `matrix3d(${rest.join()})`;
-    const idle = spin.animate([{ transform: `rotateX(${TILT}deg) rotateY(0deg)` }, { transform: `rotateX(${TILT}deg) rotateY(360deg)` }],
-      { duration: IDLE_MS, iterations: Infinity });
-    idle.currentTime = rand(0, IDLE_MS);
-    const info = { id: d.id, el: slot, die, spin, scene: slot.querySelector(".efx-scene3d"), front, prev: rest, idle, anim: null, pending: false, done: false, look };
-    stage._slots.set(d.id, info);
-    if (mine) slot.addEventListener("click", () => requestRoll(info));
+      <div class="gen-acts">
+        ${mine ? '<button type="button" class="gen-btn gen-small gen-insp" data-act="inspire" title="Spend Heroic Inspiration to roll again">✦ Inspiration</button>' : ""}
+        ${canFree ? '<button type="button" class="gen-btn gen-small" data-act="reroll">Reroll</button>' : ""}
+        <button type="button" class="gen-btn gen-small gen-swap" data-act="swap" title="Swap initiative">⇄ Swap</button>
+      </div>
+      <div class="gen-target">⇄</div>`;
+    row.appendChild(col);
+    const info = {
+      id: d.id, name: d.name, el: col, mine, skin: skinFor(d), alert: !!d.alert, alertUsed: !!d.alertUsed, insp: !!d.insp, rewind: false,
+      owners: d.owners ?? [], look: lookFor(d), mods: { ...NO_MODS, ...(mods[d.id] ?? {}) },
+      dice: { d20: [], d4: [], d8: [] }, pending: false, rolled: false, busy: false, result: null
+    };
+    stage._cols.set(d.id, info);
+    buildColumnDice(info, diceFor(info.mods));
+    paintMods(info);
+    if (mine) {
+      const box = col.querySelector(".gen-dice");
+      box.addEventListener("click", () => requestRoll(info));
+      box.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); requestRoll(info); } });
+    }
   }
+  refreshActions(stage);
 
-  if (isGM) {
-    stage.querySelector(".efx-gm-roll").addEventListener("click", () => {
+  stage.addEventListener("click", ev => {
+    const colEl = ev.target.closest(".gen-col");
+    const info = colEl ? stage._cols.get(colEl.dataset.id) : null;
+    // picking a swap partner: any other rolled column
+    if (stage._pick && info && colEl.classList.contains("is-target")) return sendSwap(stage, stage._pick, info.id);
+    const mod = ev.target.closest("[data-mod]")?.dataset.mod;
+    if (mod && info && isGM) return toggleMod(info, mod);
+    const act = ev.target.closest("[data-act]")?.dataset.act;
+    if (act === "reroll" && info && info.mine) return requestRoll(info, true);
+    if (act === "inspire" && info && info.mine) return requestInspire(info);
+    if (act === "swap" && info) return startPick(stage, info);
+    if (act === "roll-all" && isGM) {
       let i = 0;
-      for (const id of GM.pcs.keys()) if (!GM.rolled.has(id)) setTimeout(() => gmRollOne(id, game.user.id), 250 * i++);
-    });
-    const onKey = ev => { if (ev.key === "Escape" && stageEl()) { removeEventListener("keydown", onKey); broadcast({ action: "close" }); } };
-    addEventListener("keydown", onKey);
-  }
+      for (const c of stage._cols.values()) if (!c.rolled && !c.pending) setTimeout(() => requestRoll(c), 250 * i++);
+      return;
+    }
+    if (act === "begin" && isGM && allRolled(stage)) {
+      stage.querySelector(".gen-begin").disabled = true;
+      return beginCombat();
+    }
+  });
+
+  const onKey = ev => {
+    if (ev.key !== "Escape" || !stage.isConnected) return;
+    if (stage._pick) return endPick(stage);
+    if (isGM) { removeEventListener("keydown", onKey); broadcast({ action: "close" }); }
+  };
+  addEventListener("keydown", onKey);
+  stage._onKey = onKey;
 }
 
-function requestRoll(info) {
-  if (info.pending || info.done) return;
+/** Replace a column's dice with fresh ones: `counts` = { d20, d4, d8 }. */
+function buildColumnDice(info, counts) {
+  for (const list of Object.values(info.dice)) list.forEach(d => d.destroy());
+  info.dice = { d20: [], d4: [], d8: [] };
+  const d20s = info.el.querySelector(".gen-d20s"), bonus = info.el.querySelector(".gen-bonus");
+  d20s.replaceChildren(); bonus.replaceChildren();
+  d20s.classList.toggle("two", counts.d20 > 1);
+  for (let i = 0; i < counts.d20; i++) { const d = useDsnDice() ? new DsnDie("d20", info.look, info.skin) : new Die("d20", info.look); info.dice.d20.push(d); d20s.appendChild(d.el); }
+  for (const k of ["d4", "d8"]) for (let i = 0; i < counts[k]; i++) { const d = useDsnDice() ? new DsnDie(k, info.look, info.skin) : new Die(k, info.look); info.dice[k].push(d); bonus.appendChild(d.el); }
+}
+const allDice = info => [...info.dice.d20, ...info.dice.d4, ...info.dice.d8];
+
+function paintMods(info) {
+  for (const b of info.el.querySelectorAll("[data-mod]")) b.classList.toggle("on", !!info.mods[b.dataset.mod]);
+  info.el.classList.toggle("has-mods", Object.values(info.mods).some(Boolean));
+}
+
+/** GM only: flip one modifier and tell everyone. Advantage and disadvantage exclude each other. */
+function toggleMod(info, key) {
+  const mods = { ...info.mods, [key]: !info.mods[key] };
+  if (key === "adv" && mods.adv) mods.dis = false;
+  if (key === "dis" && mods.dis) mods.adv = false;
+  GM.mods.set(info.id, mods);
+  broadcast({ action: "mods", id: info.id, mods });
+}
+
+function playMods({ id, mods }) {
+  const info = stageEl()?._cols.get(id);
+  if (!info) return;
+  info.mods = { ...NO_MODS, ...mods };
+  paintMods(info);
+  // A column that has not rolled yet shows the dice it is about to throw; a rolled one keeps its dice until a re-roll.
+  if (!info.rolled && !info.pending) buildColumnDice(info, diceFor(info.mods));
+}
+
+const allRolled = stage => [...stage._cols.values()].every(c => c.rolled);
+
+/** Which buttons each column shows, for this user, right now. */
+function refreshActions(stage) {
+  const isGM = game.user.isGM, busy = !!stage._busy;
+  for (const c of stage._cols.values()) {
+    const canSwap = c.rolled && !busy && (isGM || (c.owners.includes(game.user.id) && c.alert && !c.alertUsed));
+    c.el.classList.toggle("can-swap", canSwap && [...stage._cols.values()].some(o => o !== c && o.rolled));
+    c.el.classList.toggle("can-reroll", c.mine && c.rolled && !busy);
+    c.el.classList.toggle("can-inspire", c.mine && c.insp && c.rolled && !c.busy && !busy && !stage._pick);
+    c.el.classList.toggle("is-rolled", c.rolled);
+  }
+  const begin = stage.querySelector(".gen-begin");
+  if (begin) begin.disabled = !allRolled(stage) || busy;
+}
+
+function requestRoll(info, reroll = false) {
+  const stage = stageEl();
+  if (!stage || info.pending || info.busy || stage._pick) return;
+  if (info.rolled && !reroll) return;   // a finished die is rolled again only through Reroll / Inspiration
   info.pending = true;
   info.el.classList.add("charging");
-  try { info.idle.updatePlaybackRate(3.4); } catch (e) { /* ignore */ }   // spin faster in place while the roll is resolved
-  if (game.user.isGM) gmRollOne(info.id, game.user.id);
-  else game.socket.emit(SOCKET, { action: "rollRequest", id: info.id, userId: game.user.id });
+  runeSpeed(info, 4);
+  allDice(info).forEach(d => d.spin());
+  if (game.user.isGM) gmRollOne(info.id, game.user.id, reroll);
+  else game.socket.emit(SOCKET, { action: "rollRequest", id: info.id, userId: game.user.id, reroll });
 }
 
-async function playRolled({ id, nat, total }) {
-  const stage = stageEl(); const info = stage?._slots.get(id);
-  if (!info || info.done) return;
-  info.done = true; info.pending = false;
-  const { el, die, spin, scene, front } = info, sparks = stage._sparks, colors = stage._colors;
-  el.classList.remove("charging"); el.classList.add("rolling");
-  const resEl = el.querySelector(".efx-res"); resEl.innerHTML = "";
-  const rect = () => centerOf(scene);
-  try { play(CONFIG.sounds?.dice); } catch (e) { /* ignore */ }
+/** Ask the GM client to spend this character's Heroic Inspiration. */
+function requestInspire(info) {
+  const stage = stageEl();
+  if (!stage || !info.insp || !info.rolled || info.busy || info.pending || stage._busy || stage._pick) return;
+  if (game.user.isGM) gmInspire(info.id, game.user.id);
+  else game.socket.emit(SOCKET, { action: "inspireRequest", id: info.id, userId: game.user.id });
+}
 
-  const trail = setInterval(() => {
-    const [x, y] = rect();
-    sparks.burst(x, y, { n: 3, speed: 150, life: [.3, .6], size: [1.5, 3], gravity: -60, colors });
-  }, 55);
+/**
+ * Inspiration spent: a flash of light sweeps the column, the runes run backwards and the die spins backwards
+ * until the player rolls it again. The result is wiped and the column counts as unrolled.
+ */
+function playInspired({ id }) {
+  const stage = stageEl(), info = stage?._cols.get(id);
+  if (!info) return;
+  info.insp = false; info.rolled = false; info.result = null; info.rewind = true; info.pending = false; info.busy = false;
+  info.el.classList.remove("crit", "fumble", "landed", "rolling", "charging", "is-rolled");
+  info.el.classList.add("rewind", "inspired");
+  setTimeout(() => info.el.classList.remove("inspired"), 1300);
+  runeSpeed(info, 2.2);
+  allDice(info).forEach(d => d.spin(true));
+  allDice(info).forEach(d => d.el.classList.remove("is-dropped"));
+  info.el.querySelector(".gen-res").innerHTML = `<span class="hint insp">${info.mine ? "Inspired — roll again" : "Inspired…"}</span>`;
+  const [cx, cy] = centerOf(info.el.querySelector(".gen-d20s"));
+  stage._sparks.burst(cx, cy, { n: 70, speed: 620, life: [.4, 1.1], size: [2, 5], gravity: -80, colors: ["255,236,150", "255,255,230", "255,200,80"] });
+  const f = document.createElement("div"); f.className = "gen-insp-flash"; info.el.appendChild(f);
+  setTimeout(() => f.remove(), 1200);
+  refreshActions(stage);
+}
 
-  // The die never leaves its spot: the wrapper spins it around its own vertical axis (picking up
-  // speed, then slowing down) while the die itself turns from its resting pose to the rolled face.
-  const target = front[nat - 1], D = 1900;
-  let a0 = 0;
-  try { a0 = (info.idle.effect.getComputedTiming().progress ?? 0) * 360; info.idle.cancel(); } catch (e) { /* ignore */ }
-  const wind = a0 + 300, endA = Math.ceil((wind + 3.2 * 360) / 360) * 360;
-  const anim = spin.animate([
-    { transform: `rotateX(${TILT}deg) rotateY(${a0}deg)`, offset: 0, easing: "cubic-bezier(.45,0,1,1)" },
-    { transform: `rotateX(${TILT - 10}deg) rotateY(${wind}deg)`, offset: .2, easing: "cubic-bezier(.12,.6,.22,1)" },
-    { transform: `rotateX(0deg) rotateY(${endA}deg)`, offset: 1 }
-  ], { duration: D, fill: "forwards" });
-  const turn = die.animate([{ transform: `matrix3d(${info.prev.join()})` }, { transform: `matrix3d(${target.join()})` }],
-    { duration: D, easing: "cubic-bezier(.25,.6,.25,1)", fill: "forwards" });
-  info.anim?.cancel(); info.anim = anim;
-  await anim.finished.catch(() => {});
+/** Lay a result into a column: rebuild the dice if their number changed, then let each one land. */
+async function landColumn(stage, info, r, { fromSpin = true } = {}) {
+  const want = diceOf(r), have = { d20: info.dice.d20.length, d4: info.dice.d4.length, d8: info.dice.d8.length };
+  if (want.d20 !== have.d20 || want.d4 !== have.d4 || want.d8 !== have.d8) {
+    buildColumnDice(info, want);
+    if (fromSpin) allDice(info).forEach(d => d.spin());
+  }
+  const d4s = r.bonus.filter(b => b.faces === 4), d8s = r.bonus.filter(b => b.faces === 8);
+  const rolls = [
+    ...info.dice.d20.map((d, i) => d.roll(r.d20[i] ?? r.nat)),
+    ...info.dice.d4.map((d, i) => d.roll(d4s[i]?.value ?? 1)),
+    ...info.dice.d8.map((d, i) => d.roll(d8s[i]?.value ?? 1))
+  ];
+  const sparks = stage._sparks, box = info.el.querySelector(".gen-dice");
+  const trail = setInterval(() => { const [x, y] = centerOf(box); sparks.burst(x, y, { n: 3, speed: 150, life: [.3, .6], size: [1.5, 3], gravity: -60, colors: stage._colors }); }, 60);
+  await Promise.all(rolls);
   clearInterval(trail);
-  if (!stageEl()) return;
-  die.style.transform = `matrix3d(${target.join()})`; turn.cancel();
-  spin.style.transform = "none"; anim.cancel();
-  scene.animate([{ transform: "scale(1)" }, { transform: "scale(1.07)", offset: .4 }, { transform: "scale(1)" }], { duration: 380, easing: "ease-out" });
+  if (!stage.isConnected) return false;
+  // with two d20s, dim the one that was not kept
+  if (info.dice.d20.length === 2) {
+    const keep = r.d20[0] === r.nat ? 0 : 1;
+    info.dice.d20.forEach((d, i) => d.el.classList.toggle("is-dropped", i !== keep));
+  }
+  return true;
+}
 
-  const [cx, cy] = rect(), mod = Math.round(total) - nat;
-  el.classList.remove("rolling"); el.classList.add("landed");
-  const ring = document.createElement("div"); ring.className = "efx-ring"; scene.appendChild(ring); setTimeout(() => ring.remove(), 900);
-  sparks.burst(cx, cy, { n: 36, speed: 520, life: [.4, 1], size: [2, 4.5], gravity: 600, colors });
-  if (nat === 20) {
-    el.classList.add("crit");
-    sparks.burst(cx, cy, { n: 160, speed: 900, life: [.6, 1.6], size: [2, 6], gravity: 500, colors: ["255,230,120", "255,190,40", "255,255,230"] });
+function resultHTML(r, note = "") {
+  const bonusSum = r.bonus.reduce((t, b) => t + b.value, 0);
+  const flat = Math.round(r.total - r.nat - bonusSum);
+  let sum = `<b class="nat">${r.nat}</b>`;
+  for (const b of r.bonus) sum += `<i>+</i><span class="bd">d${b.faces}: ${b.value}</span>`;
+  if (flat) sum += `<i>${flat > 0 ? "+" : "−"}</i><span>${Math.abs(flat)}</span>`;
+  return `<div class="gen-sum">${sum}</div><div class="gen-total">${Math.round(r.total)}</div>${note ? `<div class="gen-note">${note}</div>` : ""}`;
+}
+
+async function playRolled({ id, result }) {
+  const stage = stageEl(), info = stage?._cols.get(id);
+  if (!info || !result) return;
+  info.pending = false; info.busy = true;
+  info.el.classList.remove("charging", "crit", "fumble", "landed", "rewind", "inspired");
+  info.rewind = false;
+  info.el.classList.add("rolling");
+  runeSpeed(info, 4);
+  info.el.querySelector(".gen-res").innerHTML = "";
+  try { play(CONFIG.sounds?.dice); } catch (e) { /* ignore */ }
+  if (!allDice(info).some(d => d.state === "spin")) allDice(info).forEach(d => d.spin());
+  if (!await landColumn(stage, info, result)) return;
+  info.busy = false; info.rolled = true; info.result = result;
+  info.el.classList.remove("rolling"); info.el.classList.add("landed");
+  runeSpeed(info, 1);
+  const [cx, cy] = centerOf(info.el.querySelector(".gen-d20s"));
+  stage._sparks.burst(cx, cy, { n: 36, speed: 520, life: [.4, 1], size: [2, 4.5], gravity: 600, colors: stage._colors });
+  if (result.nat === 20) {
+    info.el.classList.add("crit");
+    stage._sparks.burst(cx, cy, { n: 160, speed: 900, life: [.6, 1.6], size: [2, 6], gravity: 500, colors: ["255,230,120", "255,190,40", "255,255,230"] });
     flash(stage, "gold");
-  } else if (nat === 1) {
-    el.classList.add("fumble");
-    sparks.burst(cx, cy, { n: 70, speed: 380, life: [.6, 1.4], size: [3, 6], gravity: 250, colors: ["200,20,10", "90,0,0"] });
+  } else if (result.nat === 1) {
+    info.el.classList.add("fumble");
+    stage._sparks.burst(cx, cy, { n: 70, speed: 380, life: [.6, 1.4], size: [3, 6], gravity: 250, colors: ["200,20,10", "90,0,0"] });
     flash(stage, "red");
   }
-  resEl.innerHTML = `<span class="nat">${nat}</span><span class="sum">${mod >= 0 ? "+" : "−"} ${Math.abs(mod)} = <b>${Math.round(total)}</b></span>`;
-  info.prev = target;
+  info.el.querySelector(".gen-res").innerHTML = resultHTML(result);
+  refreshActions(stage);
 }
 
 function flash(stage, kind) {
   const f = document.createElement("div"); f.className = `efx-screenflash ${kind}`; stage.appendChild(f);
   setTimeout(() => f.remove(), 700);
+}
+
+/* ---------- swapping ---------- */
+
+function startPick(stage, info) {
+  if (!info.el.classList.contains("can-swap")) return;
+  if (stage._pick === info.id) return endPick(stage);
+  endPick(stage);
+  stage._pick = info.id;
+  stage.classList.add("is-picking");
+  info.el.classList.add("is-source");
+  for (const c of stage._cols.values()) if (c !== info && c.rolled) c.el.classList.add("is-target");
+}
+
+function endPick(stage) {
+  stage._pick = null;
+  stage.classList.remove("is-picking");
+  for (const c of stage._cols.values()) c.el.classList.remove("is-source", "is-target");
+}
+
+function sendSwap(stage, a, b) {
+  endPick(stage);
+  if (game.user.isGM) gmSwap(a, b, game.user.id);
+  else game.socket.emit(SOCKET, { action: "swapRequest", a, b, userId: game.user.id });
+}
+
+/** Both columns' dice tumble down and fade; the other column's dice drop in from above, like a slot reel. */
+async function playSwapped({ a, b, ra, rb, alertUsed }) {
+  const stage = stageEl();
+  const A = stage?._cols.get(a), B = stage?._cols.get(b);
+  if (!A || !B) return;
+  stage._busy = true; refreshActions(stage);
+  if (alertUsed) A.alertUsed = true;
+  const reel = async (info, r, other) => {
+    const box = info.el.querySelector(".gen-dice"), res = info.el.querySelector(".gen-res");
+    info.busy = true;
+    info.el.classList.remove("crit", "fumble");
+    runeSpeed(info, 6);
+    allDice(info).forEach(d => d.spin());
+    res.classList.add("gen-fade");
+    box.classList.add("gen-drop-out");
+    await sleep(calm() ? 0 : 650);
+    if (!stage.isConnected) return;
+    buildColumnDice(info, diceOf(r));
+    allDice(info).forEach(d => d.spin());
+    box.classList.remove("gen-drop-out");
+    void box.offsetWidth;
+    box.classList.add("gen-drop-in");
+    const landed = landColumn(stage, info, r, { fromSpin: false });
+    await sleep(calm() ? 0 : 750);
+    box.classList.remove("gen-drop-in");
+    if (!await landed) return;
+    info.result = r; info.busy = false;
+    runeSpeed(info, 1);
+    if (r.nat === 20) info.el.classList.add("crit"); else if (r.nat === 1) info.el.classList.add("fumble");
+    res.innerHTML = resultHTML(r, `⇄ ${esc(other.name)}`);
+    res.classList.remove("gen-fade");
+    const [cx, cy] = centerOf(box);
+    stage._sparks.burst(cx, cy, { n: 40, speed: 480, life: [.4, 1], size: [2, 4.5], gravity: 600, colors: stage._colors });
+  };
+  await Promise.all([reel(A, ra, B), reel(B, rb, A)]);
+  stage._busy = false; refreshActions(stage);
 }
 
 function playOrder({ order = [], style = "fire", flame = DEFAULT_FLAME } = {}) {
